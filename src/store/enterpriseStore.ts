@@ -26,7 +26,7 @@ const initialState: EnterpriseState = {
     accountsReceivable: [0, 0, 0, 0], // 初始无应收账款
     accountsPayable: 0,
     taxesPayable: 0, // 初始无应交税
-    equity: 60 + 16 + 3 + 6 + 2 - 40, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料3 + 成品6 + 在制品2) - 现金40 = 47
+    equity: 60 + 16 + 0 + 0 + 0 - 40, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料0 + 成品0 + 在制品0) - 现金40 = 36
     retainedProfit: 7, // 利润留存
     annualNetProfit: 0, // 初始年度净利
   },
@@ -60,7 +60,7 @@ const initialState: EnterpriseState = {
             maintenanceCost: 1, // 1M/年维护费
             salvageValue: 4, // 出售残值4M
             remainingLife: 15, // 剩余使用年限
-            inProgressProducts: 1, // 1个P1在制品，价值2M
+            inProgressProducts: 0, // 0个P1在制品，价值0M
             installationProgress: 0, // 已完成安装
             conversionProgress: 0, // 未在转产
           },
@@ -87,7 +87,7 @@ const initialState: EnterpriseState = {
             maintenanceCost: 1, // 1M/年维护费
             salvageValue: 4, // 出售残值4M
             remainingLife: 15, // 剩余使用年限
-            inProgressProducts: 1, // 1个P1在制品，价值2M
+            inProgressProducts: 0, // 0个P1在制品，价值0M
             installationProgress: 0, // 已完成安装
             conversionProgress: 0, // 未在转产
           },
@@ -115,13 +115,13 @@ const initialState: EnterpriseState = {
   },
   logistics: {
     rawMaterials: [
-      { type: 'R1', name: '原材料1', quantity: 3, price: 1, leadTime: 1 }, // 3个R1，每个1M，共计3M
+      { type: 'R1', name: '原材料1', quantity: 0, price: 1, leadTime: 1 }, // 0个R1，每个1M，共计0M
       { type: 'R2', name: '原材料2', quantity: 0, price: 1, leadTime: 1 },
       { type: 'R3', name: '原材料3', quantity: 0, price: 1, leadTime: 2 },
       { type: 'R4', name: '原材料4', quantity: 0, price: 1, leadTime: 2 },
     ],
     finishedProducts: [
-      { type: 'P1', name: '产品1', quantity: 3, price: 2 }, // 3个P1，每个2M，共计6M
+      { type: 'P1', name: '产品1', quantity: 0, price: 2 }, // 0个P1，每个2M，共计0M
       { type: 'P2', name: '产品2', quantity: 0, price: 4 }, // P2=R1+R2+1M=3M，定价4M
       { type: 'P3', name: '产品3', quantity: 0, price: 6 }, // P3=2R2+R3+1M=4M，定价6M
       { type: 'P4', name: '产品4', quantity: 0, price: 8 }, // P4=R2+R3+2R4+1M=5M，定价8M
@@ -1210,7 +1210,7 @@ export const useEnterpriseStore = create<{
         year: state.state.operation.currentYear,
         quarter: state.state.operation.currentQuarter,
         timestamp: Date.now(),
-        description: `投放广告，花费${amount}M，覆盖本地和区域市场，产品P1和P2`,
+        description: `投放广告（其他支出），花费${amount}M，覆盖本地和区域市场，产品P1和P2`,
         cashChange: -amount,
         newCash,
         operator: '企业1管理者',
@@ -1746,8 +1746,8 @@ export const useEnterpriseStore = create<{
       // 总利息支出
       const totalInterest = longTermInterest + shortTermInterest;
       
-      // 10. 支付行政管理费（每年结束时扣除1M）
-      const adminCost = state.state.operation.currentQuarter === 4 ? 1 : 0;
+      // 10. 支付行政管理费（第四季度开始时扣除1M）
+      const adminCost = newQuarter === 4 ? 1 : 0;
       
       // 11. 计提折旧（简化处理，假设每季度2M）
       const depreciationCost = 2;
@@ -1758,17 +1758,6 @@ export const useEnterpriseStore = create<{
       // 计算新的现金余额
       const newCash = state.state.finance.cash + cashIncrease - totalCashOut;
       const cashChange = cashIncrease - totalCashOut;
-      
-      // 添加现金流量历史记录
-      const newCashFlowHistory = [
-        ...state.state.operation.cashFlowHistory,
-        {
-          year: newYear,
-          quarter: newQuarter,
-          cash: newCash,
-          description: `第${newYear}年第${newQuarter}季度现金余额`,
-        },
-      ];
       
       // 处理年度所得税（第四季度结束时）
       let taxAmount = 0;
@@ -1781,6 +1770,17 @@ export const useEnterpriseStore = create<{
       // 扣除所得税后的现金余额
       const finalCash = newCash - taxAmount;
       const finalCashChange = cashChange - taxAmount;
+      
+      // 添加现金流量历史记录
+      const newCashFlowHistory = [
+        ...state.state.operation.cashFlowHistory,
+        {
+          year: newYear,
+          quarter: newQuarter,
+          cash: finalCash,
+          description: `第${newYear}年第${newQuarter}季度现金余额`,
+        },
+      ];
       
       // 创建详细的财务日志描述
       let detailedDescription = `第${newYear}年第${newQuarter}季度结束现金变动:`;
@@ -1826,7 +1826,7 @@ export const useEnterpriseStore = create<{
           year: newYear,
           quarter: newQuarter,
           timestamp: Date.now(),
-          description: `第${state.state.operation.currentYear}年结束，年度结账，行政管理费：${adminCost}M，计提折旧：${depreciationCost}M，年度所得税：${taxAmount}M`,
+          description: `第${state.state.operation.currentYear}年结束，年度结账，计提折旧：${depreciationCost}M，年度所得税：${taxAmount}M`,
           cashChange: -taxAmount,
           newCash: finalCash,
           operator: '系统自动',
