@@ -4,11 +4,13 @@ import { useEnterpriseStore } from '../store/enterpriseStore';
 import { Factory, ProductionLine } from '../types/enterprise';
 
 const ProductionCenter: React.FC = () => {
-  const { state, investProductR_D, addProductionLine, removeProductionLine, cancelProduction, startProduction } = useEnterpriseStore();
+  const { state, investProductR_D, addProductionLine, removeProductionLine, cancelProduction, startProduction, convertProductionLine } = useEnterpriseStore();
   const { production, finance, productionLineLimits } = state;
   const [addingLine, setAddingLine] = useState<string | null>(null); // 记录当前正在添加生产线的厂房ID
   const [selectedProduct, setSelectedProduct] = useState<'P1' | 'P2' | 'P3' | 'P4'>('P1');
   const [selectedLineType, setSelectedLineType] = useState<'automatic' | 'semi-automatic' | 'manual' | 'flexible'>('automatic');
+  const [convertingLine, setConvertingLine] = useState<string | null>(null); // 记录当前正在转产的生产线ID
+  const [newProduct, setNewProduct] = useState<'P1' | 'P2' | 'P3' | 'P4'>('P1');
 
   // 计算已使用的生产线数量
   const getUsedProductionLines = (lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible') => {
@@ -158,30 +160,145 @@ const ProductionCenter: React.FC = () => {
                       </div>
                     </div>
                     
+                    {/* 转产进度条 */}
+                    {line.status === 'converting' && line.conversionPeriod > 0 && (
+                      <div className="mt-2">
+                        <div className="flex justify-between text-xs mb-1">
+                          <span className="text-gray-600">转产进度:</span>
+                          <span>{line.conversionProgress}/{line.conversionPeriod}Q</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div 
+                            className="bg-yellow-500 h-2 rounded-full" 
+                            style={{ width: `${(line.conversionProgress / line.conversionPeriod) * 100}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* 生产进度条 - 生产周期大于2Q时显示 */}
+                    {line.status === 'running' && line.productionPeriod > 1 && (
+                      <div className="mt-2">
+                        <div className="flex justify-between text-xs mb-1">
+                          <span className="text-gray-600">生产进度:</span>
+                          <span>
+                            {line.type === 'semi-automatic' ? `${state.operation.currentQuarter % 2 === 0 ? 2 : 1}/2` : 
+                             line.type === 'manual' ? `${((state.operation.currentQuarter - 1) % 3) + 1}/3` : 
+                             `${line.productionPeriod}/1`}Q
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div 
+                            className="bg-green-500 h-2 rounded-full" 
+                            style={{ 
+                              width: line.type === 'semi-automatic' ? `${(state.operation.currentQuarter % 2 === 0 ? 2 : 1) / 2 * 100}%` : 
+                                     line.type === 'manual' ? `${(((state.operation.currentQuarter - 1) % 3) + 1) / 3 * 100}%` : 
+                                     '100%' 
+                            }}
+                          ></div>
+                        </div>
+                      </div>
+                    )}
+                    
                     {/* 操作按钮 */}
-                    <div className="mt-3 flex gap-2">
-                      {line.status === 'running' && (
-                        <button
-                          onClick={() => cancelProduction(line.id)}
-                          className="flex-1 bg-red-500 text-white py-1 px-3 rounded text-xs hover:bg-red-600 transition-colors"
-                        >
-                          取消生产
-                        </button>
+                    <div className="mt-3">
+                      {convertingLine === line.id ? (
+                        // 转产表单
+                        <div className="space-y-3 p-3 bg-white border border-gray-200 rounded">
+                          <div className="text-sm font-medium text-center">生产线转产</div>
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">选择新产品:</label>
+                            <select 
+                              value={newProduct}
+                              onChange={(e) => setNewProduct(e.target.value as 'P1' | 'P2' | 'P3' | 'P4')}
+                              className="w-full border border-gray-300 rounded-md p-2 text-sm"
+                            >
+                              <option value="P1">P1 (已完成研发)</option>
+                              <option value="P2" disabled={!production.productRD.P2.completed}>
+                                P2 ({production.productRD.P2.completed ? '已完成研发' : '研发中'})
+                              </option>
+                              <option value="P3" disabled={!production.productRD.P3.completed}>
+                                P3 ({production.productRD.P3.completed ? '已完成研发' : '研发中'})
+                              </option>
+                              <option value="P4" disabled={!production.productRD.P4.completed}>
+                                P4 ({production.productRD.P4.completed ? '已完成研发' : '研发中'})
+                              </option>
+                            </select>
+                          </div>
+                          <div className="bg-gray-50 p-2 rounded text-xs">
+                            <div className="flex justify-between mb-1">
+                              <span className="text-gray-600">转产周期:</span>
+                              <span>{line.conversionPeriod > 0 ? `${line.conversionPeriod}Q` : '无'}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">转产费用:</span>
+                              <span>{line.conversionCost > 0 ? `${line.conversionCost}M` : '无'}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => {
+                                convertProductionLine(line.id, newProduct);
+                                setConvertingLine(null);
+                              }}
+                              disabled={finance.cash < line.conversionCost || newProduct === line.product}
+                              className="flex-1 bg-blue-500 text-white py-2 px-3 rounded text-xs hover:bg-blue-600 disabled:bg-blue-300"
+                            >
+                              确认转产
+                            </button>
+                            <button 
+                              onClick={() => setConvertingLine(null)}
+                              className="flex-1 bg-gray-300 text-gray-700 py-2 px-3 rounded text-xs hover:bg-gray-400"
+                            >
+                              取消
+                            </button>
+                          </div>
+                          {finance.cash < line.conversionCost && (
+                            <div className="text-xs text-red-500 text-center">
+                              现金不足，需要{line.conversionCost}M
+                            </div>
+                          )}
+                          {newProduct === line.product && (
+                            <div className="text-xs text-red-500 text-center">
+                              不能转产到当前产品
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        // 操作按钮
+                        <div className="flex gap-2">
+                          {line.status === 'running' && (
+                            <button
+                              onClick={() => cancelProduction(line.id)}
+                              className="flex-1 bg-red-500 text-white py-1 px-3 rounded text-xs hover:bg-red-600 transition-colors"
+                            >
+                              取消生产
+                            </button>
+                          )}
+                          {line.status === 'idle' && (
+                            <button
+                              onClick={() => startProduction(line.id)}
+                              className="flex-1 bg-green-500 text-white py-1 px-3 rounded text-xs hover:bg-green-600 transition-colors"
+                            >
+                              开始生产
+                            </button>
+                          )}
+                          {line.status === 'idle' && line.conversionCost >= 0 && (
+                            <button
+                              onClick={() => setConvertingLine(line.id)}
+                              className="bg-yellow-500 text-white py-1 px-3 rounded text-xs hover:bg-yellow-600 transition-colors"
+                            >
+                              转产
+                            </button>
+                          )}
+                          <button
+                            onClick={() => removeProductionLine(factory.id, line.id)}
+                            className="bg-gray-500 text-white py-1 px-3 rounded text-xs hover:bg-gray-600 transition-colors"
+                          >
+                            移除
+                          </button>
+                        </div>
                       )}
-                      {line.status === 'idle' && (
-                        <button
-                          onClick={() => startProduction(line.id)}
-                          className="flex-1 bg-green-500 text-white py-1 px-3 rounded text-xs hover:bg-green-600 transition-colors"
-                        >
-                          开始生产
-                        </button>
-                      )}
-                      <button
-                        onClick={() => removeProductionLine(factory.id, line.id)}
-                        className="bg-gray-500 text-white py-1 px-3 rounded text-xs hover:bg-gray-600 transition-colors"
-                      >
-                        移除
-                      </button>
                     </div>
                   </div>
                 ))}

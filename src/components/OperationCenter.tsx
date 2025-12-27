@@ -255,7 +255,7 @@ const OperationCenter: React.FC = () => {
           </div>
         ) : (
           <div className="max-h-80 overflow-y-auto space-y-3">
-            {operation.operationLogs.map((log: { id: string; time: string; operator: string; action: string; dataChange: string }) => (
+            {operation.operationLogs.slice(0, 5).map((log: { id: string; time: string; operator: string; action: string; dataChange: string }) => (
               <div key={log.id} className="border border-gray-200 rounded-lg p-4 bg-white">
                 <div className="flex justify-between items-start mb-2">
                   <div className="font-medium">{log.action}</div>

@@ -1553,6 +1553,14 @@ export const useEnterpriseStore = create<{
               inProgressProducts: productionQuantity,
             };
           }
+          
+          // 每年减少剩余寿命
+          if (newYear > state.state.operation.currentYear) {
+            newFactories[factoryIndex].productionLines[lineIndex] = {
+              ...newFactories[factoryIndex].productionLines[lineIndex],
+              remainingLife: Math.max(0, line.remainingLife - 1),
+            };
+          }
         });
       });
       

@@ -289,7 +289,7 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {state.operation.financialLogs.map((log: FinancialLogRecord) => (
+                      {state.operation.financialLogs.slice(0, 5).map((log: FinancialLogRecord) => (
                         <tr key={log.id} className="hover:bg-gray-50">
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             第{log.year}年{log.quarter}Q
