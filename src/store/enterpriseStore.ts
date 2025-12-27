@@ -1,0 +1,1506 @@
+import { create } from 'zustand';
+import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord } from '../types/enterprise';
+
+// 全局状态，用于跟踪重置次数
+let resetCount = 0;
+
+// 企业初始状态
+const initialState: EnterpriseState = {
+  finance: {
+    cash: 20, // 20M（根据规则设定的初始现金）
+    longTermLoan: {
+      amount: 0, // 初始贷款为0
+      term: 12, // 3年 = 12季度
+      interestRate: 0.1, // 10%
+      maxAmount: 40, // 最多40M
+      minAmount: 20, // 每次20M
+    },
+    shortTermLoan: {
+      amount: 0, // 初始贷款为0
+      term: 4, // 1年 = 4季度
+      interestRate: 0.05, // 5%
+      maxAmount: 40, // 最多40M
+      minAmount: 20, // 每次20M
+      lendingPeriods: [1, 6], // 1月和6月放贷（对应季度1和季度3）
+    },
+    accountsReceivable: [0, 0, 15, 0], // 3账期应收款15M
+    accountsPayable: 0,
+    taxesPayable: 0, // 初始无应交税
+    equity: 60 + 16 + 3 + 6 + 2 + 15 - 20, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料3 + 成品6 + 在制品2 + 应收15) - 现金20 = 82
+    retainedProfit: 7, // 利润留存
+    annualNetProfit: 0, // 初始年度净利
+  },
+  // 生产线类型余量设置
+  productionLineLimits: {
+    automatic: 2, // 全自动生产线初始余量
+    'semi-automatic': 2, // 半自动生产线初始余量
+    manual: 2, // 手工线初始余量
+    flexible: 2, // 柔性线初始余量
+  },
+  production: {
+    factories: [
+      {
+        id: 'factory-1',
+        name: '企业1大厂房',
+        type: 'large',
+        purchasePrice: 40, // 大厂房价值40M
+        capacity: 6, // 大厂房6个生产位
+        productionLines: [
+          {
+            id: 'line-1',
+            name: '全自动生产线1',
+            type: 'automatic',
+            status: 'running',
+            product: 'P1',
+            purchasePrice: 16, // 全自动生产线原值16M
+            installationPeriod: 0, // 已完成安装
+            productionPeriod: 1, // 1Q生产周期
+            conversionPeriod: 2, // 2Q转产周期
+            conversionCost: 4, // 4M转产费用
+            maintenanceCost: 1, // 1M/年维护费
+            salvageValue: 4, // 出售残值4M
+            remainingLife: 15, // 剩余使用年限
+            inProgressProducts: 1, // 1个P1在制品，价值2M
+          },
+        ],
+      },
+      {
+        id: 'factory-2',
+        name: '企业1小厂房',
+        type: 'small',
+        purchasePrice: 20, // 小厂房价值20M
+        capacity: 4, // 小厂房4个生产位
+        productionLines: [
+          {
+            id: 'line-2',
+            name: '全自动生产线2',
+            type: 'automatic',
+            status: 'running',
+            product: 'P1',
+            purchasePrice: 16, // 全自动生产线原值16M
+            installationPeriod: 0, // 已完成安装
+            productionPeriod: 1, // 1Q生产周期
+            conversionPeriod: 2, // 2Q转产周期
+            conversionCost: 4, // 4M转产费用
+            maintenanceCost: 1, // 1M/年维护费
+            salvageValue: 4, // 出售残值4M
+            remainingLife: 15, // 剩余使用年限
+            inProgressProducts: 1, // 1个P1在制品，价值2M
+          },
+        ],
+      },
+    ],
+    productRD: {
+      P1: true, // 已完成研发
+      P2: {
+        completed: false,
+        progress: 0, // 0/6
+        totalInvestment: 0,
+      },
+      P3: {
+        completed: false,
+        progress: 0,
+        totalInvestment: 0,
+      },
+      P4: {
+        completed: false,
+        progress: 0,
+        totalInvestment: 0,
+      },
+    },
+  },
+  logistics: {
+    rawMaterials: [
+      { type: 'R1', name: '原材料1', quantity: 3, price: 1, leadTime: 1 }, // 3个R1，每个1M，共计3M
+      { type: 'R2', name: '原材料2', quantity: 0, price: 1, leadTime: 1 },
+      { type: 'R3', name: '原材料3', quantity: 0, price: 1, leadTime: 2 },
+      { type: 'R4', name: '原材料4', quantity: 0, price: 1, leadTime: 2 },
+    ],
+    finishedProducts: [
+      { type: 'P1', name: '产品1', quantity: 3, price: 2 }, // 3个P1，每个2M，共计6M
+      { type: 'P2', name: '产品2', quantity: 0, price: 4 }, // P2=R1+R2+1M=3M，定价4M
+      { type: 'P3', name: '产品3', quantity: 0, price: 6 }, // P3=2R2+R3+1M=4M，定价6M
+      { type: 'P4', name: '产品4', quantity: 0, price: 8 }, // P4=R2+R3+2R4+1M=5M，定价8M
+    ],
+    rawMaterialOrders: [
+      {
+        id: 'order-1',
+        materialType: 'R1',
+        quantity: 2,
+        price: 1,
+        orderPeriod: 1,
+        arrivalPeriod: 2, // 已下R1原料订单2个，1季度后到货
+      },
+    ], // 初始原料订单
+  },
+  marketing: {
+    markets: [
+      { type: 'local', name: '本地市场', status: 'available', developmentProgress: 1, annualMaintenanceCost: 1 }, // 已开通
+      { type: 'regional', name: '区域市场', status: 'developing', developmentProgress: 0, annualMaintenanceCost: 1 }, // 第二年可用
+      { type: 'domestic', name: '国内市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 }, // 第三年可用
+      { type: 'asian', name: '亚洲市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 },
+      { type: 'international', name: '国际市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 },
+    ],
+    isoCertifications: [
+      { type: 'ISO9000', name: 'ISO9000认证', status: 'uncertified', certificationProgress: 0, totalCost: 0 },
+      { type: 'ISO14000', name: 'ISO14000认证', status: 'uncertified', certificationProgress: 0, totalCost: 0 },
+    ],
+    advertisements: [],
+    availableOrders: [],
+    selectedOrders: [],
+  },
+  operation: {
+    currentYear: 1,
+    currentQuarter: 1,
+    operationLogs: [],
+    financialLogs: [
+      // 初始财务日志
+      {
+        id: `log-${Date.now()}`,
+        year: 1,
+        quarter: 1,
+        timestamp: Date.now(),
+        description: '初始现金',
+        cashChange: 20,
+        newCash: 20,
+        operator: '系统初始化',
+      },
+    ],
+    annualPlan: {
+      marketDevelopment: [],
+      productRD: [],
+      productionPlan: '',
+      marketingPlan: '',
+    },
+    cashFlowHistory: [
+      // 初始现金流量记录
+      {
+        year: 1,
+        quarter: 1,
+        cash: 20,
+        description: '初始现金',
+      },
+    ],
+  },
+};
+
+// 创建Zustand store
+export const useEnterpriseStore = create<{
+  state: EnterpriseState;
+  saveFiles: SaveFile[];
+  resetCount: number;
+  // 财务操作
+  updateCash: (amount: number, description?: string) => void;
+  updateLongTermLoan: (amount: number, term: number) => void;
+  updateShortTermLoan: (amount: number, term: number) => void;
+  updateAccountsReceivable: (period: 0 | 1 | 2 | 3, amount: number) => void;
+  updateTaxesPayable: (amount: number) => void;
+  applyLongTermLoan: () => void;
+  applyShortTermLoan: () => void;
+  // 生产操作
+  investProductR_D: (product: 'P1' | 'P2' | 'P3' | 'P4', amount: number) => void;
+  updateProductionLineStatus: (lineId: string, status: EnterpriseState['production']['factories'][0]['productionLines'][0]['status']) => void;
+  addProductionLine: (factoryId: string, lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible', product: 'P1' | 'P2' | 'P3' | 'P4') => void;
+  removeProductionLine: (factoryId: string, lineId: string) => void;
+  cancelProduction: (lineId: string) => void;
+  startProduction: (lineId: string) => void;
+  getProductionLineRemaining: (lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible') => number;
+  // 物流操作
+  placeRawMaterialOrder: (materialType: 'R1' | 'R2' | 'R3' | 'R4', quantity: number) => void;
+  updateRawMaterialInventory: (materialType: 'R1' | 'R2' | 'R3' | 'R4', quantity: number) => void;
+  updateFinishedProductInventory: (productType: 'P1' | 'P2' | 'P3' | 'P4', quantity: number) => void;
+  // 营销操作
+  placeAdvertisement: (amount: number) => void;
+  selectOrder: (orderId: string) => void;
+  deliverOrder: (orderId: string) => void;
+  // 运营操作
+  nextQuarter: () => void;
+  addOperationLog: (action: string, dataChange: string) => void;
+  // 存档系统
+  saveGame: () => void;
+  autoSaveGame: () => void;
+  loadGame: (saveFile: SaveFile) => void;
+  resetGame: () => void;
+  getSaveFiles: () => SaveFile[];
+}>((set, get) => ({
+  state: initialState,
+  saveFiles: [],
+  resetCount: resetCount,
+
+  // 加载本地存储的存档
+  getSaveFiles: () => {
+    try {
+      const savedFiles = localStorage.getItem('enterpriseSaveFiles');
+      return savedFiles ? JSON.parse(savedFiles) : [];
+    } catch (error) {
+      console.error('Failed to load save files:', error);
+      return [];
+    }
+  },
+
+  // 保存游戏（手动存档）
+  saveGame: () => {
+    const { state, resetCount } = get();
+    const timestamp = Date.now();
+    const date = new Date();
+    const formattedDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+    
+    const saveFile: SaveFile = {
+      id: `save-${timestamp}`,
+      name: `企业1-${formattedDate}-重置${resetCount}`,
+      enterpriseName: '企业1',
+      timestamp,
+      resetCount,
+      state: JSON.parse(JSON.stringify(state)),
+      createdAt: formattedDate,
+    };
+    
+    // 加载现有存档
+    const saveFiles = get().getSaveFiles();
+    // 添加新存档
+    const updatedSaveFiles = [saveFile, ...saveFiles];
+    // 保存到localStorage
+    localStorage.setItem('enterpriseSaveFiles', JSON.stringify(updatedSaveFiles));
+    // 更新状态
+    set({ saveFiles: updatedSaveFiles });
+    // 添加操作日志
+    get().addOperationLog('手动存档', `保存当前状态，存档名称：${saveFile.name}`);
+  },
+
+  // 自动保存游戏（每季度调用）
+  autoSaveGame: () => {
+    const { state, resetCount } = get();
+    const timestamp = Date.now();
+    const date = new Date();
+    const formattedDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+    
+    const saveFile: SaveFile = {
+      id: `save-auto-${timestamp}`,
+      name: `企业1-${formattedDate}-重置${resetCount}`,
+      enterpriseName: '企业1',
+      timestamp,
+      resetCount,
+      state: JSON.parse(JSON.stringify(state)),
+      createdAt: formattedDate,
+    };
+    
+    // 加载现有存档
+    const saveFiles = get().getSaveFiles();
+    // 添加新存档
+    const updatedSaveFiles = [saveFile, ...saveFiles];
+    // 保存到localStorage
+    localStorage.setItem('enterpriseSaveFiles', JSON.stringify(updatedSaveFiles));
+    // 更新状态
+    set({ saveFiles: updatedSaveFiles });
+    // 添加操作日志
+    get().addOperationLog('自动存档', `季度结束自动保存，存档名称：${saveFile.name}`);
+  },
+
+  // 加载游戏
+  loadGame: (saveFile: SaveFile) => {
+    set({ 
+      state: JSON.parse(JSON.stringify(saveFile.state)),
+      resetCount: saveFile.resetCount
+    });
+    // 添加操作日志
+    get().addOperationLog('加载存档', `加载存档：${saveFile.name}`);
+  },
+
+  // 重置游戏
+  resetGame: () => {
+    // 增加重置次数
+    resetCount++;
+    // 重置状态
+    set({ 
+      state: JSON.parse(JSON.stringify(initialState)),
+      resetCount: resetCount
+    });
+    // 添加操作日志
+    get().addOperationLog('重置游戏', `游戏重置，当前重置次数：${resetCount}`);
+  },
+
+  // 财务操作
+  updateCash: (amount, description = '现金变动') =>
+    set((state) => {
+      const newCash = state.state.finance.cash + amount;
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description,
+        cashChange: amount,
+        newCash,
+        operator: '企业1管理者',
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          finance: {
+            ...state.state.finance,
+            cash: newCash,
+          },
+          operation: {
+            ...state.state.operation,
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+          },
+        },
+      };
+    }),
+  
+  // 添加财务日志
+  addFinancialLog: (description, cashChange, newCash) =>
+    set((state) => {
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description,
+        cashChange,
+        newCash,
+        operator: '企业1管理者',
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          operation: {
+            ...state.state.operation,
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+          },
+        },
+      };
+    }),
+
+
+  updateLongTermLoan: (amount, term) =>
+    set((state) => ({
+      state: {
+        ...state.state,
+        finance: {
+          ...state.state.finance,
+          longTermLoan: {
+            ...state.state.finance.longTermLoan,
+            amount: state.state.finance.longTermLoan.amount + amount,
+            term,
+          },
+        },
+      },
+    })),
+
+  updateShortTermLoan: (amount, term) =>
+    set((state) => ({
+      state: {
+        ...state.state,
+        finance: {
+          ...state.state.finance,
+          shortTermLoan: {
+            ...state.state.finance.shortTermLoan,
+            amount: state.state.finance.shortTermLoan.amount + amount,
+            term,
+          },
+        },
+      },
+    })),
+
+  updateAccountsReceivable: (period, amount) =>
+    set((state) => {
+      const newAR = [...state.state.finance.accountsReceivable] as [number, number, number, number];
+      newAR[period] += amount;
+      return {
+        state: {
+          ...state.state,
+          finance: {
+            ...state.state.finance,
+            accountsReceivable: newAR,
+          },
+        },
+      };
+    }),
+
+  updateTaxesPayable: (amount) =>
+    set((state) => ({
+      state: {
+        ...state.state,
+        finance: {
+          ...state.state.finance,
+          taxesPayable: state.state.finance.taxesPayable + amount,
+        },
+      },
+    })),
+  
+  // 申请长期贷款
+  applyLongTermLoan: () =>
+    set((state) => {
+      // 检查是否符合贷款条件
+      if (state.state.operation.currentQuarter !== 4) {
+        return state; // 只有第4季度才能申请长期贷款
+      }
+      if (state.state.finance.longTermLoan.amount >= 40) {
+        return state; // 长期贷款已达上限
+      }
+      
+      const loanAmount = 20; // 每次20M
+      const newLongTermLoanAmount = state.state.finance.longTermLoan.amount + loanAmount;
+      const newCash = state.state.finance.cash + loanAmount;
+      
+      // 记录财务日志
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `申请长期贷款20M，期限3年，年息10%`,
+        cashChange: loanAmount,
+        newCash,
+        operator: '企业1管理者',
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          finance: {
+            ...state.state.finance,
+            longTermLoan: {
+              ...state.state.finance.longTermLoan,
+              amount: newLongTermLoanAmount,
+            },
+            cash: newCash,
+          },
+          operation: {
+            ...state.state.operation,
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+          },
+        },
+      };
+    }),
+  
+  // 申请短期贷款
+  applyShortTermLoan: () =>
+    set((state) => {
+      // 检查是否符合贷款条件
+      if (![1, 3].includes(state.state.operation.currentQuarter)) {
+        return state; // 只有第1和第3季度才能申请短期贷款
+      }
+      if (state.state.finance.shortTermLoan.amount >= 40) {
+        return state; // 短期贷款已达上限
+      }
+      
+      const loanAmount = 20; // 每次20M
+      const newShortTermLoanAmount = state.state.finance.shortTermLoan.amount + loanAmount;
+      const newCash = state.state.finance.cash + loanAmount;
+      
+      // 记录财务日志
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `申请短期贷款20M，期限1年，年息5%`,
+        cashChange: loanAmount,
+        newCash,
+        operator: '企业1管理者',
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          finance: {
+            ...state.state.finance,
+            shortTermLoan: {
+              ...state.state.finance.shortTermLoan,
+              amount: newShortTermLoanAmount,
+            },
+            cash: newCash,
+          },
+          operation: {
+            ...state.state.operation,
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+          },
+        },
+      };
+    }),
+  
+  // 生产操作
+  investProductR_D: (product, amount) =>
+    set((state) => {
+      if (product === 'P1') {
+        return state;
+      }
+      
+      // 检查是否已经投资
+      const currentRD = state.state.production.productRD[product];
+      if (currentRD.totalInvestment > 0) {
+        return state; // 已投资，不允许重复投资
+      }
+      
+      // 一次性投资6M，设置进度为0，等待6个季度后完成
+      const newRD = {
+        ...state.state.production.productRD,
+        [product]: {
+          ...state.state.production.productRD[product],
+          progress: 0, // 投资后进度重置为0，等待6个季度自动完成
+          totalInvestment: state.state.production.productRD[product].totalInvestment + amount,
+          completed: false, // 投资后不立即完成，等待6个季度
+        },
+      };
+      
+      // 更新现金并记录财务日志
+      const investmentCost = -amount;
+      const newCash = state.state.finance.cash + investmentCost;
+      
+      // 添加操作日志
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '产品研发投资',
+        dataChange: `投资${product}产品研发6M，预计6个季度后完成`,
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          production: {
+            ...state.state.production,
+            productRD: newRD,
+          },
+          finance: {
+            ...state.state.finance,
+            cash: newCash,
+          },
+          operation: {
+            ...state.state.operation,
+            operationLogs: [operationLog, ...state.state.operation.operationLogs],
+            financialLogs: [
+              {
+                id: `finlog-${Date.now()}`,
+                year: state.state.operation.currentYear,
+                quarter: state.state.operation.currentQuarter,
+                timestamp: Date.now(),
+                description: `投资${product}产品研发，一次性花费${amount}M，预计6个季度后完成`,
+                cashChange: investmentCost,
+                newCash,
+                operator: '企业1管理者',
+              },
+              ...state.state.operation.financialLogs
+            ],
+          },
+        },
+      };
+    }),
+
+  updateProductionLineStatus: (lineId, status) =>
+    set((state) => {
+      const newFactories = state.state.production.factories.map((factory) => {
+        const newProductionLines = factory.productionLines.map((line) =>
+          line.id === lineId ? { ...line, status } : line
+        );
+        return { ...factory, productionLines: newProductionLines };
+      });
+      return {
+        state: {
+          ...state.state,
+          production: {
+            ...state.state.production,
+            factories: newFactories,
+          },
+        },
+      };
+    }),
+
+  // 获取生产线剩余数量
+  getProductionLineRemaining: (lineType) => {
+    const state = useEnterpriseStore.getState().state;
+    // 计算已使用的生产线数量
+    const usedCount = state.production.factories.reduce((total, factory) => {
+      return total + factory.productionLines.filter(line => line.type === lineType).length;
+    }, 0);
+    // 返回剩余数量
+    return state.productionLineLimits[lineType] - usedCount;
+  },
+
+  // 添加生产线
+  addProductionLine: (factoryId, lineType, product) =>
+    set((state) => {
+      // 找到指定厂房
+      const factoryIndex = state.state.production.factories.findIndex(f => f.id === factoryId);
+      if (factoryIndex === -1) {
+        return state;
+      }
+
+      const factory = state.state.production.factories[factoryIndex];
+      // 检查厂房是否还有容量
+      if (factory.productionLines.length >= factory.capacity) {
+        return state;
+      }
+
+      // 计算已使用的生产线数量
+      const usedCount = state.state.production.factories.reduce((total, f) => {
+        return total + f.productionLines.filter(line => line.type === lineType).length;
+      }, 0);
+      
+      // 检查生产线余量是否足够
+      if (usedCount >= state.state.productionLineLimits[lineType]) {
+        return state;
+      }
+
+      // 生产线类型配置
+      const lineConfig = {
+        automatic: {
+          name: '全自动生产线',
+          purchasePrice: 16,
+          installationPeriod: 4,
+          productionPeriod: 1,
+          conversionPeriod: 2,
+          conversionCost: 4,
+          salvageValue: 4,
+          remainingLife: 15,
+        },
+        'semi-automatic': {
+          name: '半自动生产线',
+          purchasePrice: 8,
+          installationPeriod: 2,
+          productionPeriod: 2,
+          conversionPeriod: 1,
+          conversionCost: 1,
+          salvageValue: 2,
+          remainingLife: 12,
+        },
+        manual: {
+          name: '手工生产线',
+          purchasePrice: 5,
+          installationPeriod: 0,
+          productionPeriod: 3,
+          conversionPeriod: 0,
+          conversionCost: 0,
+          salvageValue: 1,
+          remainingLife: 10,
+        },
+        flexible: {
+          name: '柔性生产线',
+          purchasePrice: 24,
+          installationPeriod: 4,
+          productionPeriod: 1,
+          conversionPeriod: 0,
+          conversionCost: 0,
+          salvageValue: 6,
+          remainingLife: 15,
+        },
+      };
+
+      const config = lineConfig[lineType];
+      
+      // 创建新生产线
+      const newLine: ProductionLine = {
+        id: `line-${Date.now()}`,
+        name: `${factory.name}${config.name}${factory.productionLines.length + 1}`,
+        type: lineType,
+        status: 'running',
+        product: product,
+        purchasePrice: config.purchasePrice,
+        installationPeriod: config.installationPeriod,
+        productionPeriod: config.productionPeriod,
+        conversionPeriod: config.conversionPeriod,
+        conversionCost: config.conversionCost,
+        maintenanceCost: 1, // 所有生产线维护费都是1M/年
+        salvageValue: config.salvageValue,
+        remainingLife: config.remainingLife,
+        inProgressProducts: 0,
+      };
+
+      // 更新厂房生产线列表
+      const newFactories = [...state.state.production.factories];
+      newFactories[factoryIndex] = {
+        ...factory,
+        productionLines: [...factory.productionLines, newLine],
+      };
+
+      // 扣除购买生产线的费用
+      const purchaseCost = -newLine.purchasePrice;
+      const newCash = state.state.finance.cash + purchaseCost;
+
+      const updatedState = {
+        ...state.state,
+        production: {
+          ...state.state.production,
+          factories: newFactories,
+        },
+        finance: {
+          ...state.state.finance,
+          cash: newCash,
+        },
+        operation: {
+          ...state.state.operation,
+          financialLogs: [
+            {
+              id: `finlog-${Date.now()}`,
+              year: state.state.operation.currentYear,
+              quarter: state.state.operation.currentQuarter,
+              timestamp: Date.now(),
+              description: `购买${config.name}，花费${newLine.purchasePrice}M`,
+              cashChange: purchaseCost,
+              newCash,
+              operator: '企业1管理者',
+            },
+            ...state.state.operation.financialLogs
+          ],
+        },
+      };
+
+      // 添加操作日志
+      const newLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '添加生产线',
+        dataChange: `在${factory.name}添加了${product}产品的${config.name}，花费${config.purchasePrice}M`,
+      };
+
+      updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
+
+      return {
+        state: updatedState,
+      };
+    }),
+
+  // 取消生产
+  cancelProduction: (lineId) =>
+    set((state) => {
+      // 找到包含该生产线的厂房
+      let updatedFactories = [...state.state.production.factories];
+      let lineName = '';
+      let productName = '';
+
+      updatedFactories = updatedFactories.map(factory => {
+        const updatedLines = factory.productionLines.map(line => {
+          if (line.id === lineId) {
+            lineName = line.name;
+            productName = line.product || '无产品';
+            return {
+              ...line,
+              status: 'idle' as const, // 明确类型化为生产线状态联合类型
+              inProgressProducts: 0,
+            };
+          }
+          return line;
+        });
+        return {
+          ...factory,
+          productionLines: updatedLines,
+        };
+      });
+
+      const updatedState = {
+        ...state.state,
+        production: {
+          ...state.state.production,
+          factories: updatedFactories,
+        },
+      };
+
+      // 添加操作日志
+      const newLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '取消生产',
+        dataChange: `取消了${lineName}的生产，产品：${productName}`,
+      };
+
+      updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
+
+      return {
+        state: updatedState,
+      };
+    }),
+
+  // 开始生产
+  startProduction: (lineId) =>
+    set((state) => {
+      // 找到包含该生产线的厂房
+      let updatedFactories = [...state.state.production.factories];
+      let lineName = '';
+      let productName = '';
+
+      updatedFactories = updatedFactories.map(factory => {
+        const updatedLines = factory.productionLines.map(line => {
+          if (line.id === lineId) {
+            lineName = line.name;
+            productName = line.product || '无产品';
+            // 重新开始生产，在制品数量与生产线类型相关
+            const productionQuantity = line.type === 'automatic' ? 1 : line.type === 'flexible' ? 1 : line.type === 'semi-automatic' ? 1 : 1;
+            return {
+              ...line,
+              status: 'running' as const, // 明确类型化为生产线状态联合类型
+              inProgressProducts: productionQuantity,
+            };
+          }
+          return line;
+        });
+        return {
+          ...factory,
+          productionLines: updatedLines,
+        };
+      });
+
+      const updatedState = {
+        ...state.state,
+        production: {
+          ...state.state.production,
+          factories: updatedFactories,
+        },
+      };
+
+      // 添加操作日志
+      const newLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '开始生产',
+        dataChange: `开始了${lineName}的生产，产品：${productName}`,
+      };
+
+      updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
+
+      return {
+        state: updatedState,
+      };
+    }),
+
+  // 移除生产线
+  removeProductionLine: (factoryId, lineId) =>
+    set((state) => {
+      // 找到对应的厂房
+      const factoryIndex = state.state.production.factories.findIndex(f => f.id === factoryId);
+      if (factoryIndex === -1) {
+        return state;
+      }
+
+      const factory = state.state.production.factories[factoryIndex];
+      const lineIndex = factory.productionLines.findIndex(l => l.id === lineId);
+      if (lineIndex === -1) {
+        return state;
+      }
+
+      const line = factory.productionLines[lineIndex];
+      const salvageValue = line.salvageValue;
+
+      // 更新生产线列表
+      const updatedLines = factory.productionLines.filter(l => l.id !== lineId);
+      const updatedFactory = {
+        ...factory,
+        productionLines: updatedLines,
+      };
+
+      // 更新厂房列表
+      const updatedFactories = [...state.state.production.factories];
+      updatedFactories[factoryIndex] = updatedFactory;
+
+      // 更新现金（加上残值）
+      const salvageIncome = salvageValue;
+      const newCash = state.state.finance.cash + salvageIncome;
+
+      const updatedState = {
+        ...state.state,
+        production: {
+          ...state.state.production,
+          factories: updatedFactories,
+        },
+        finance: {
+          ...state.state.finance,
+          cash: newCash,
+        },
+        operation: {
+          ...state.state.operation,
+          financialLogs: [
+            {
+              id: `finlog-${Date.now()}`,
+              year: state.state.operation.currentYear,
+              quarter: state.state.operation.currentQuarter,
+              timestamp: Date.now(),
+              description: `出售${line.name}，获得残值收入${salvageValue}M`,
+              cashChange: salvageIncome,
+              newCash,
+              operator: '企业1管理者',
+            },
+            ...state.state.operation.financialLogs
+          ],
+        },
+      };
+
+      // 添加操作日志
+      const newLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '移除生产线',
+        dataChange: `从${factory.name}移除了${line.name}，获得残值${salvageValue}M`,
+      };
+
+      updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
+
+      return {
+        state: updatedState,
+      };
+    }),
+
+  // 物流操作
+  placeRawMaterialOrder: (materialType, quantity) =>
+    set((state) => {
+      const material = state.state.logistics.rawMaterials.find((m) => m.type === materialType);
+      if (!material) return state;
+      
+      const orderId = `order-${Date.now()}`;
+      const newOrder = {
+        id: orderId,
+        materialType,
+        quantity,
+        price: material.price,
+        orderPeriod: state.state.operation.currentQuarter,
+        arrivalPeriod: state.state.operation.currentQuarter + material.leadTime,
+      };
+      
+      // 添加操作日志
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '下原材料订单',
+        dataChange: `下${materialType}原料订单${quantity}个，预计${newOrder.arrivalPeriod}Q到货，总价${quantity * material.price}M`,
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          logistics: {
+            ...state.state.logistics,
+            rawMaterialOrders: [...state.state.logistics.rawMaterialOrders, newOrder],
+          },
+          operation: {
+            ...state.state.operation,
+            operationLogs: [operationLog, ...state.state.operation.operationLogs],
+          },
+        },
+      };
+    }),
+
+  // 取消原材料订单
+  cancelRawMaterialOrder: (orderId) =>
+    set((state) => {
+      // 找到要取消的订单
+      const orderToCancel = state.state.logistics.rawMaterialOrders.find(order => order.id === orderId);
+      if (!orderToCancel) return state;
+      
+      // 过滤掉要取消的订单
+      const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => order.id !== orderId);
+      
+      // 添加操作日志
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '取消原材料订单',
+        dataChange: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个，预计${orderToCancel.arrivalPeriod}Q到货`,
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          logistics: {
+            ...state.state.logistics,
+            rawMaterialOrders: remainingOrders,
+          },
+          operation: {
+            ...state.state.operation,
+            operationLogs: [operationLog, ...state.state.operation.operationLogs],
+          },
+        },
+      };
+    }),
+
+  updateRawMaterialInventory: (materialType, quantity) =>
+    set((state) => {
+      const newRawMaterials = state.state.logistics.rawMaterials.map((material) =>
+        material.type === materialType
+          ? { ...material, quantity: material.quantity + quantity }
+          : material
+      );
+      return {
+        state: {
+          ...state.state,
+          logistics: {
+            ...state.state.logistics,
+            rawMaterials: newRawMaterials,
+          },
+        },
+      };
+    }),
+
+  updateFinishedProductInventory: (productType, quantity) =>
+    set((state) => {
+      const newFinishedProducts = state.state.logistics.finishedProducts.map((product) =>
+        product.type === productType
+          ? { ...product, quantity: product.quantity + quantity }
+          : product
+      );
+      return {
+        state: {
+          ...state.state,
+          logistics: {
+            ...state.state.logistics,
+            finishedProducts: newFinishedProducts,
+          },
+        },
+      };
+    }),
+
+  // 营销操作
+  placeAdvertisement: (amount) =>
+    set((state) => {
+      const adId = `ad-${Date.now()}`;
+      const newAd = {
+        id: adId,
+        amount,
+        period: state.state.operation.currentQuarter,
+        markets: ['本地市场', '区域市场'], // 一次性投放覆盖本地和区域市场
+        products: ['P1', 'P2'], // 覆盖P1和P2产品
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          marketing: {
+            ...state.state.marketing,
+            advertisements: [...state.state.marketing.advertisements, newAd],
+          },
+        },
+      };
+    }),
+
+  selectOrder: (orderId) =>
+    set((state) => {
+      const newAvailableOrders = state.state.marketing.availableOrders.map((order) =>
+        order.id === orderId ? { ...order, isSelected: true } : order
+      );
+      const selectedOrder = state.state.marketing.availableOrders.find((order) => order.id === orderId);
+      const newSelectedOrders = selectedOrder
+        ? [...state.state.marketing.selectedOrders, { ...selectedOrder, isSelected: true }]
+        : state.state.marketing.selectedOrders;
+      
+      return {
+        state: {
+          ...state.state,
+          marketing: {
+            ...state.state.marketing,
+            availableOrders: newAvailableOrders,
+            selectedOrders: newSelectedOrders,
+          },
+        },
+      };
+    }),
+
+  deliverOrder: (orderId) =>
+    set((state) => {
+      const newSelectedOrders = state.state.marketing.selectedOrders.map((order) =>
+        order.id === orderId ? { ...order, isDelivered: true } : order
+      );
+      
+      const deliveredOrder = newSelectedOrders.find((order) => order.id === orderId);
+      if (deliveredOrder) {
+        // 更新成品库存
+        const newFinishedProducts = state.state.logistics.finishedProducts.map((product) =>
+          product.type === deliveredOrder.productType
+            ? { ...product, quantity: product.quantity - deliveredOrder.quantity }
+            : product
+        );
+        
+        // 更新应收账款
+        const newAR = [...state.state.finance.accountsReceivable] as [number, number, number, number];
+        newAR[deliveredOrder.paymentPeriod - 1] += deliveredOrder.totalAmount;
+        
+        return {
+          state: {
+            ...state.state,
+            marketing: {
+              ...state.state.marketing,
+              selectedOrders: newSelectedOrders,
+            },
+            logistics: {
+              ...state.state.logistics,
+              finishedProducts: newFinishedProducts,
+            },
+            finance: {
+              ...state.state.finance,
+              accountsReceivable: newAR,
+            },
+          },
+        };
+      }
+      
+      return state;
+    }),
+
+  // 运营操作
+  nextQuarter: () =>
+    set((state) => {
+      const newQuarter = state.state.operation.currentQuarter === 4 ? 1 : state.state.operation.currentQuarter + 1;
+      const newYear = state.state.operation.currentQuarter === 4 ? state.state.operation.currentYear + 1 : state.state.operation.currentYear;
+      
+      // 季度初日志记录 - 季初现金盘点
+      const initialCash = state.state.finance.cash;
+      const quarterStartLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-start`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: `第${newYear}年第${newQuarter}季度初现金盘点，现金余额：${initialCash}M`,
+        cashChange: 0,
+        newCash: initialCash,
+        operator: '系统自动',
+      };
+      
+      // 1. 处理季初现金盘点
+      // 2. 更新还贷/还本付息（这里简化处理，实际应根据贷款期限处理）
+      // 3. 申请短期贷款（这里简化处理，实际应根据放贷月份处理）
+      
+      // 应收账款滚动
+      const newAR = [
+        state.state.finance.accountsReceivable[1],
+        state.state.finance.accountsReceivable[2],
+        state.state.finance.accountsReceivable[3],
+        0,
+      ] as [number, number, number, number];
+      
+      // 增加现金（到期的应收账款）
+      const cashIncrease = state.state.finance.accountsReceivable[0];
+      
+      // 4. 更新应收账款/应收款收现日志
+      const arLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-ar`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: `更新应收账款/应收款收现，收现金额：${cashIncrease}M`,
+        cashChange: cashIncrease,
+        newCash: initialCash + cashIncrease,
+        operator: '系统自动',
+      };
+      
+      // 5. 更新生产研发进度
+      const updatedProductRD = { ...state.state.production.productRD };
+      let rdInvestment = 0;
+      // 记录研发完成的产品
+      const completedProducts: string[] = [];
+      for (const product of ['P2', 'P3', 'P4'] as const) {
+        // 只对已经投资但未完成的产品更新进度
+        if (!updatedProductRD[product].completed && updatedProductRD[product].totalInvestment > 0) {
+          // 每个季度研发进度+1
+          const newProgress = updatedProductRD[product].progress + 1;
+          const requiredProgress = 6; // P2、P3、P4都改为6个季度
+          updatedProductRD[product] = {
+            ...updatedProductRD[product],
+            progress: Math.min(newProgress, requiredProgress),
+            completed: newProgress >= requiredProgress,
+          };
+          // 记录研发完成的产品
+          if (newProgress >= requiredProgress) {
+            completedProducts.push(product);
+          }
+        }
+      }
+      
+      // 产品研发投资日志
+      const rdLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-rd`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: `产品研发投资，投资金额：${rdInvestment}M`,
+        cashChange: -rdInvestment,
+        newCash: initialCash + cashIncrease - rdInvestment,
+        operator: '系统自动',
+      };
+      
+      // 6. 处理原材料订单到货
+      const newRawMaterials = [...state.state.logistics.rawMaterials];
+      const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => {
+        if (order.arrivalPeriod === state.state.operation.currentQuarter) {
+          // 订单到货，更新原材料库存
+          const materialIndex = newRawMaterials.findIndex(m => m.type === order.materialType);
+          if (materialIndex !== -1) {
+            newRawMaterials[materialIndex] = {
+              ...newRawMaterials[materialIndex],
+              quantity: newRawMaterials[materialIndex].quantity + order.quantity,
+            };
+          }
+          return false; // 订单已完成，从列表中移除
+        }
+        return true; // 订单未完成，保留在列表中
+      });
+      
+      // 原材料入库日志
+      const materialArrivalLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-material`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: `原材料入库/更新原料订单，当前原材料库存：${newRawMaterials.map(m => `${m.type}: ${m.quantity}`).join(', ')}`,
+        cashChange: 0,
+        newCash: initialCash + cashIncrease - rdInvestment,
+        operator: '系统自动',
+      };
+      
+      // 7. 处理生产线生产完成（将在制品转换为成品）
+      const newFactories = [...state.state.production.factories];
+      const newFinishedProducts = [...state.state.logistics.finishedProducts];
+      
+      let totalProduced = 0;
+      newFactories.forEach((factory, factoryIndex) => {
+        factory.productionLines.forEach((line, lineIndex) => {
+          if (line.status === 'running') {
+            // 计算是否完成生产：根据生产线类型和生产周期
+            let shouldProduce = false;
+            
+            if (line.type === 'automatic' || line.type === 'flexible') {
+              // 自动化和柔性生产线每季度完成1个产品
+              shouldProduce = true;
+            } else if (line.type === 'semi-automatic') {
+              // 半自动生产线需要2个季度完成1个产品
+              shouldProduce = newQuarter % 2 === 0;
+            } else if (line.type === 'manual') {
+              // 手工生产线需要3个季度完成1个产品
+              shouldProduce = newQuarter % 3 === 0;
+            }
+            
+            if (shouldProduce && line.inProgressProducts > 0) {
+              // 生产完成，将在制品转换为成品
+              const productIndex = newFinishedProducts.findIndex(p => p.type === line.product!);
+              if (productIndex !== -1) {
+                newFinishedProducts[productIndex] = {
+                  ...newFinishedProducts[productIndex],
+                  quantity: newFinishedProducts[productIndex].quantity + line.inProgressProducts,
+                };
+                totalProduced += line.inProgressProducts;
+              }
+            }
+            
+            // 重新开始生产，设置在制品数量
+            let productionQuantity = 0;
+            if (line.status === 'running') {
+              // 所有运行中的生产线都保持1个在制品，直到生产完成
+              productionQuantity = 1;
+            }
+            
+            newFactories[factoryIndex].productionLines[lineIndex] = {
+              ...newFactories[factoryIndex].productionLines[lineIndex],
+              inProgressProducts: productionQuantity,
+            };
+          }
+        });
+      });
+      
+      // 更新生产/完工入库日志
+      const productionLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-production`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: `更新生产/完工入库，本季度生产完成：${totalProduced}个产品，当前成品库存：${newFinishedProducts.map(p => `${p.type}: ${p.quantity}`).join(', ')}`,
+        cashChange: 0,
+        newCash: initialCash + cashIncrease - rdInvestment,
+        operator: '系统自动',
+      };
+      
+      // 8. 计算季度维护成本（如果是新的一年的第1季度）
+      let maintenanceCost = 0;
+      if (newQuarter === 1) {
+        // 每年支付一次维护费
+        state.state.production.factories.forEach(factory => {
+          factory.productionLines.forEach(line => {
+            maintenanceCost += line.maintenanceCost;
+          });
+        });
+      }
+      
+      // 9. 计算贷款利息
+      // 长期贷款利息（每年支付）
+      let longTermInterest = 0;
+      if (newQuarter === 1) {
+        longTermInterest = state.state.finance.longTermLoan.amount * state.state.finance.longTermLoan.interestRate;
+      }
+      
+      // 短期贷款利息（每季度支付）
+      const shortTermInterest = state.state.finance.shortTermLoan.amount * state.state.finance.shortTermLoan.interestRate;
+      
+      // 总利息支出
+      const totalInterest = longTermInterest + shortTermInterest;
+      
+      // 10. 支付行政管理费（简化处理，假设每季度1M）
+      const adminCost = 1;
+      
+      // 11. 计提折旧（简化处理，假设每季度2M）
+      const depreciationCost = 2;
+      
+      // 总现金支出
+      const totalCashOut = maintenanceCost + totalInterest + adminCost + depreciationCost + rdInvestment;
+      
+      // 计算新的现金余额
+      const newCash = state.state.finance.cash + cashIncrease - totalCashOut;
+      const cashChange = cashIncrease - totalCashOut;
+      
+      // 添加现金流量历史记录
+      const newCashFlowHistory = [
+        ...state.state.operation.cashFlowHistory,
+        {
+          year: newYear,
+          quarter: newQuarter,
+          cash: newCash,
+          description: `第${newYear}年第${newQuarter}季度现金余额`,
+        },
+      ];
+      
+      // 处理年度所得税（第四季度结束时）
+      let taxAmount = 0;
+      if (state.state.operation.currentQuarter === 4) {
+        // 计算所得税（假设税率为25%）
+        const annualProfit = state.state.finance.annualNetProfit;
+        taxAmount = annualProfit > 0 ? Math.round(annualProfit * 0.25 * 100) / 100 : 0;
+      }
+      
+      // 扣除所得税后的现金余额
+      const finalCash = newCash - taxAmount;
+      const finalCashChange = cashChange - taxAmount;
+      
+      // 创建详细的财务日志描述
+      let detailedDescription = `第${newYear}年第${newQuarter}季度结束现金变动:`;
+      if (cashIncrease > 0) {
+        detailedDescription += ` 应收账款收现 ${cashIncrease}M`;
+      }
+      if (maintenanceCost > 0) {
+        detailedDescription += ` - 设备维护费 ${maintenanceCost}M`;
+      }
+      if (longTermInterest > 0) {
+        detailedDescription += ` - 长期贷款利息 ${longTermInterest}M`;
+      }
+      if (shortTermInterest > 0) {
+        detailedDescription += ` - 短期贷款利息 ${shortTermInterest}M`;
+      }
+      if (adminCost > 0) {
+        detailedDescription += ` - 行政管理费 ${adminCost}M`;
+      }
+      if (rdInvestment > 0) {
+        detailedDescription += ` - 研发投资 ${rdInvestment}M`;
+      }
+      if (taxAmount > 0) {
+        detailedDescription += ` - 年度所得税 ${taxAmount}M`;
+      }
+      
+      // 季度末日志记录 - 季度结束
+      const quarterEndLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-end`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: detailedDescription,
+        cashChange: finalCashChange,
+        newCash: finalCash,
+        operator: '系统自动',
+      };
+      
+      // 年度结束日志记录
+      let yearEndLog: FinancialLogRecord | null = null;
+      if (state.state.operation.currentQuarter === 4) {
+        yearEndLog = {
+          id: `finlog-${Date.now()}-yearend`,
+          year: newYear,
+          quarter: newQuarter,
+          timestamp: Date.now(),
+          description: `第${state.state.operation.currentYear}年结束，年度结账，计提折旧：${depreciationCost}M，年度所得税：${taxAmount}M`,
+          cashChange: -taxAmount,
+          newCash: finalCash,
+          operator: '系统自动',
+        };
+      }
+      
+      // 构建所有日志记录
+      const allLogs = [quarterStartLog, arLog, rdLog, materialArrivalLog, productionLog, quarterEndLog];
+      if (yearEndLog) {
+        allLogs.push(yearEndLog);
+      }
+      
+      const updatedState = {
+        ...state.state,
+        operation: {
+          ...state.state.operation,
+          currentYear: newYear,
+          currentQuarter: newQuarter,
+          cashFlowHistory: newCashFlowHistory,
+          financialLogs: [...allLogs, ...state.state.operation.financialLogs],
+        },
+        finance: {
+          ...state.state.finance,
+          cash: finalCash,
+          accountsReceivable: newAR,
+          // 新年度重置年度净利润
+          annualNetProfit: newYear > state.state.operation.currentYear ? 0 : state.state.finance.annualNetProfit,
+        },
+        production: {
+          ...state.state.production,
+          productRD: updatedProductRD,
+          factories: newFactories,
+        },
+        logistics: {
+          ...state.state.logistics,
+          rawMaterials: newRawMaterials,
+          finishedProducts: newFinishedProducts,
+          rawMaterialOrders: remainingOrders,
+        },
+      };
+      
+      // 记录研发完成日志
+      if (completedProducts.length > 0) {
+        for (const product of completedProducts) {
+          const operationLog = {
+            id: `log-${Date.now()}-${product}`,
+            time: new Date().toLocaleString(),
+            operator: '系统自动',
+            action: '产品研发完成',
+            dataChange: `${product}产品研发完成，总投资${updatedProductRD[product as 'P2' | 'P3' | 'P4'].totalInvestment}M，耗时6个季度`,
+          };
+          updatedState.operation.operationLogs = [operationLog, ...updatedState.operation.operationLogs];
+        }
+      }
+      
+      // 自动保存游戏
+      setTimeout(() => {
+        get().autoSaveGame();
+      }, 0);
+      
+      return {
+        state: updatedState,
+      };
+    }),
+
+  addOperationLog: (action, dataChange) =>
+    set((state) => {
+      const newLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action,
+        dataChange,
+      };
+      return {
+        state: {
+          ...state.state,
+          operation: {
+            ...state.state.operation,
+            operationLogs: [newLog, ...state.state.operation.operationLogs],
+          },
+        },
+      };
+    }),
+}));
