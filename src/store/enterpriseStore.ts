@@ -7,7 +7,7 @@ let resetCount = 0;
 // 企业初始状态
 const initialState: EnterpriseState = {
   finance: {
-    cash: 20, // 20M（根据规则设定的初始现金）
+    cash: 40, // 40M（根据规则设定的初始现金）
     longTermLoan: {
       amount: 0, // 初始贷款为0
       term: 12, // 3年 = 12季度
@@ -26,7 +26,7 @@ const initialState: EnterpriseState = {
     accountsReceivable: [0, 0, 15, 0], // 3账期应收款15M
     accountsPayable: 0,
     taxesPayable: 0, // 初始无应交税
-    equity: 60 + 16 + 3 + 6 + 2 + 15 - 20, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料3 + 成品6 + 在制品2 + 应收15) - 现金20 = 82
+    equity: 60 + 16 + 3 + 6 + 2 + 15 - 40, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料3 + 成品6 + 在制品2 + 应收15) - 现金40 = 62
     retainedProfit: 7, // 利润留存
     annualNetProfit: 0, // 初始年度净利
   },
@@ -165,8 +165,8 @@ const initialState: EnterpriseState = {
         quarter: 1,
         timestamp: Date.now(),
         description: '初始现金',
-        cashChange: 20,
-        newCash: 20,
+        cashChange: 40,
+        newCash: 40,
         operator: '系统初始化',
       },
     ],
@@ -181,7 +181,7 @@ const initialState: EnterpriseState = {
       {
         year: 1,
         quarter: 1,
-        cash: 20,
+        cash: 40,
         description: '初始现金',
       },
     ],
@@ -1551,14 +1551,6 @@ export const useEnterpriseStore = create<{
             newFactories[factoryIndex].productionLines[lineIndex] = {
               ...newFactories[factoryIndex].productionLines[lineIndex],
               inProgressProducts: productionQuantity,
-            };
-          }
-          
-          // 每年减少剩余寿命
-          if (newYear > state.state.operation.currentYear) {
-            newFactories[factoryIndex].productionLines[lineIndex] = {
-              ...newFactories[factoryIndex].productionLines[lineIndex],
-              remainingLife: Math.max(0, line.remainingLife - 1),
             };
           }
         });

@@ -1,6 +1,7 @@
 'use client';
 import React from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
+import { FinancialLogRecord } from '../types/enterprise';
 
 const OperationCenter: React.FC = () => {
   const { state, nextQuarter } = useEnterpriseStore();
@@ -67,8 +68,8 @@ const OperationCenter: React.FC = () => {
           </div>
         </div>
         
-        {/* 季度控制按钮 */}
-        <div className="mt-4 flex justify-center">
+        {/* 控制按钮组 */}
+        <div className="mt-4 flex flex-wrap justify-center gap-3">
           <button
             className="bg-blue-500 text-white py-2 px-6 rounded-lg hover:bg-blue-600 font-medium flex items-center space-x-2"
             onClick={nextQuarter}
@@ -76,6 +77,395 @@ const OperationCenter: React.FC = () => {
             <span>进入下一季度</span>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+            </svg>
+          </button>
+          <button
+            onClick={() => {
+              // 生成运行控制表CSV
+              const year = state.operation.currentYear;
+              const { finance, logistics, production, marketing, operation } = state;
+              
+              // 从现金流量历史记录中获取全年各季度的数据
+              const yearCashFlowData = operation.cashFlowHistory.filter(record => record.year === year);
+              
+              // 初始化季度数据对象
+              const quarterData: Record<number, { cash: number; description: string }> = {
+                1: { cash: 0, description: '' },
+                2: { cash: 0, description: '' },
+                3: { cash: 0, description: '' },
+                4: { cash: 0, description: '' }
+              };
+              
+              // 填充季度数据
+              yearCashFlowData.forEach(record => {
+                quarterData[record.quarter] = {
+                  cash: record.cash,
+                  description: record.description
+                };
+              });
+              
+              // 从财务日志中获取各季度的现金余额
+              const yearFinancialLogs = operation.financialLogs.filter(log => log.year === year);
+              
+              // 定义完整的操作步骤和数据
+              const annualSteps = [
+                { id: 'annual-1', name: '新年度规划会议', data: '' },
+                { id: 'annual-2', name: '参加订货会/登记销售订单', data: `${marketing.availableOrders.length}个可用订单` },
+                { id: 'annual-3', name: '制定新年度计划', data: '' },
+                { id: 'annual-4', name: '支付应付税', data: `${finance.taxesPayable}M` }
+              ];
+              
+              // 获取所有存档文件，用于获取历史季度数据
+              const saveFiles = JSON.parse(localStorage.getItem('enterpriseSaveFiles') || '[]');
+              
+              // 筛选当前年份的存档，并按季度排序
+              const yearSaveFiles = saveFiles
+                .filter((file: any) => file.state?.operation?.currentYear === year)
+                .sort((a: any, b: any) => {
+                  const quarterA = a.state?.operation?.currentQuarter || 0;
+                  const quarterB = b.state?.operation?.currentQuarter || 0;
+                  return quarterA - quarterB;
+                });
+              
+              // 获取指定季度的存档数据
+              const getQuarterState = (quarter: number) => {
+                // 找到对应季度的存档
+                const saveFile = yearSaveFiles.find((file: any) => {
+                  const fileQuarter = file.state?.operation?.currentQuarter || 0;
+                  return fileQuarter === quarter;
+                });
+                
+                // 如果找到存档，返回存档数据；否则返回当前数据（针对当前季度）
+                if (saveFile) {
+                  return saveFile.state;
+                }
+                return state;
+              };
+              
+              // 创建季度特定的数据生成函数
+              const getQuarterlyData = (quarter: number) => {
+                // 只显示对应季度及之前的数据
+                const shouldShowData = quarter <= operation.currentQuarter;
+                
+                if (!shouldShowData) {
+                  return {
+                    shortTermLoan: '',
+                    maxLoan: '',
+                    accountsPayable: '',
+                    rawMaterials: '',
+                    rawMaterialOrders: '',
+                    finishedProducts: '',
+                    productionLines: '',
+                    accountsReceivable: '',
+                    factories: '',
+                    deliveredOrders: '',
+                    productRD: ''
+                  };
+                }
+                
+                // 获取对应季度的状态数据
+                const quarterState = getQuarterState(quarter);
+                const { finance: quarterFinance, logistics: quarterLogistics, production: quarterProduction, marketing: quarterMarketing } = quarterState;
+                
+                return {
+                  shortTermLoan: `短期贷款: ${quarterFinance.shortTermLoan.amount}M, 利息: ${(quarterFinance.shortTermLoan.amount * quarterFinance.shortTermLoan.interestRate).toFixed(2)}M`,
+                  maxLoan: `最大可贷: ${quarterFinance.shortTermLoan.maxAmount}M`,
+                  accountsPayable: `${quarterFinance.accountsPayable}M`,
+                  rawMaterials: `R1: ${quarterLogistics.rawMaterials.find((m: any) => m.type === 'R1')?.quantity || 0}, R2: ${quarterLogistics.rawMaterials.find((m: any) => m.type === 'R2')?.quantity || 0}, R3: ${quarterLogistics.rawMaterials.find((m: any) => m.type === 'R3')?.quantity || 0}, R4: ${quarterLogistics.rawMaterials.find((m: any) => m.type === 'R4')?.quantity || 0}`,
+                  rawMaterialOrders: `${quarterLogistics.rawMaterialOrders.length}个订单`,
+                  finishedProducts: `P1: ${quarterLogistics.finishedProducts.find((p: any) => p.type === 'P1')?.quantity || 0}, P2: ${quarterLogistics.finishedProducts.find((p: any) => p.type === 'P2')?.quantity || 0}, P3: ${quarterLogistics.finishedProducts.find((p: any) => p.type === 'P3')?.quantity || 0}, P4: ${quarterLogistics.finishedProducts.find((p: any) => p.type === 'P4')?.quantity || 0}`,
+                  productionLines: `${quarterProduction.factories.reduce((sum: number, f: any) => sum + f.productionLines.length, 0)}条生产线`,
+                  accountsReceivable: `应收款: ${quarterFinance.accountsReceivable.reduce((sum: number, ar: number) => sum + ar, 0)}M`,
+                  factories: `${quarterProduction.factories.length}个厂房`,
+                  deliveredOrders: `${quarterMarketing.selectedOrders.filter((o: any) => o.isDelivered).length}/${quarterMarketing.selectedOrders.length}个订单已交付`,
+                  productRD: `P2: ${quarterProduction.productRD.P2.completed ? '已完成' : `${quarterProduction.productRD.P2.progress}/6`}, P3: ${quarterProduction.productRD.P3.completed ? '已完成' : `${quarterProduction.productRD.P3.progress}/6`}, P4: ${quarterProduction.productRD.P4.completed ? '已完成' : `${quarterProduction.productRD.P4.progress}/6`}`
+                };
+              };
+              
+              const quarterlySteps = [
+                { 
+                  id: 'q-1', 
+                  name: '季初现金盘点（请填写库存数量）', 
+                  data: {
+                    1: quarterData[1].cash ? `${quarterData[1].cash}M` : '',
+                    2: quarterData[2].cash ? `${quarterData[2].cash}M` : '',
+                    3: quarterData[3].cash ? `${quarterData[3].cash}M` : '',
+                    4: quarterData[4].cash ? `${quarterData[4].cash}M` : ''
+                  }
+                },
+                { 
+                  id: 'q-2', 
+                  name: '更新短贷/还本付息', 
+                  data: {
+                    1: getQuarterlyData(1).shortTermLoan || '',
+                    2: getQuarterlyData(2).shortTermLoan || '',
+                    3: getQuarterlyData(3).shortTermLoan || '',
+                    4: getQuarterlyData(4).shortTermLoan || ''
+                  }
+                },
+                { 
+                  id: 'q-3', 
+                  name: '申请短期贷款（高利贷）', 
+                  data: {
+                    1: getQuarterlyData(1).maxLoan || '',
+                    2: getQuarterlyData(2).maxLoan || '',
+                    3: getQuarterlyData(3).maxLoan || '',
+                    4: getQuarterlyData(4).maxLoan || ''
+                  }
+                },
+                { 
+                  id: 'q-4', 
+                  name: '更新应付账款/归还应付账款', 
+                  data: {
+                    1: getQuarterlyData(1).accountsPayable || '',
+                    2: getQuarterlyData(2).accountsPayable || '',
+                    3: getQuarterlyData(3).accountsPayable || '',
+                    4: getQuarterlyData(4).accountsPayable || ''
+                  }
+                },
+                { 
+                  id: 'q-5', 
+                  name: '原材料入库/更新原材料单', 
+                  data: {
+                    1: getQuarterlyData(1).rawMaterials || '',
+                    2: getQuarterlyData(2).rawMaterials || '',
+                    3: getQuarterlyData(3).rawMaterials || '',
+                    4: getQuarterlyData(4).rawMaterials || ''
+                  }
+                },
+                { 
+                  id: 'q-6', 
+                  name: '下原料订单', 
+                  data: {
+                    1: getQuarterlyData(1).rawMaterialOrders || '',
+                    2: getQuarterlyData(2).rawMaterialOrders || '',
+                    3: getQuarterlyData(3).rawMaterialOrders || '',
+                    4: getQuarterlyData(4).rawMaterialOrders || ''
+                  }
+                },
+                { 
+                  id: 'q-7', 
+                  name: '更新生产/完工入库', 
+                  data: {
+                    1: getQuarterlyData(1).finishedProducts || '',
+                    2: getQuarterlyData(2).finishedProducts || '',
+                    3: getQuarterlyData(3).finishedProducts || '',
+                    4: getQuarterlyData(4).finishedProducts || ''
+                  }
+                },
+                { 
+                  id: 'q-8', 
+                  name: '投资新生产线/变卖生产线/生产线转产', 
+                  data: {
+                    1: getQuarterlyData(1).productionLines || '',
+                    2: getQuarterlyData(2).productionLines || '',
+                    3: getQuarterlyData(3).productionLines || '',
+                    4: getQuarterlyData(4).productionLines || ''
+                  }
+                },
+                { id: 'q-9', name: '向其他企业购买原材料/出售原材料', data: { 1: '', 2: '', 3: '', 4: '' } },
+                { id: 'q-10', name: '开始下一批生产', data: { 1: '', 2: '', 3: '', 4: '' } },
+                { 
+                  id: 'q-11', 
+                  name: '更新应收账款/应收账款收现', 
+                  data: {
+                    1: getQuarterlyData(1).accountsReceivable || '',
+                    2: getQuarterlyData(2).accountsReceivable || '',
+                    3: getQuarterlyData(3).accountsReceivable || '',
+                    4: getQuarterlyData(4).accountsReceivable || ''
+                  }
+                },
+                { 
+                  id: 'q-12', 
+                  name: '出售厂房', 
+                  data: {
+                    1: getQuarterlyData(1).factories || '',
+                    2: getQuarterlyData(2).factories || '',
+                    3: getQuarterlyData(3).factories || '',
+                    4: getQuarterlyData(4).factories || ''
+                  }
+                },
+                { id: 'q-13', name: '向其他企业购买成品/出售成品', data: { 1: '', 2: '', 3: '', 4: '' } },
+                { 
+                  id: 'q-14', 
+                  name: '按订单交货', 
+                  data: {
+                    1: getQuarterlyData(1).deliveredOrders || '',
+                    2: getQuarterlyData(2).deliveredOrders || '',
+                    3: getQuarterlyData(3).deliveredOrders || '',
+                    4: getQuarterlyData(4).deliveredOrders || ''
+                  }
+                },
+                { 
+                  id: 'q-15', 
+                  name: '产品研发投资', 
+                  data: {
+                    1: getQuarterlyData(1).productRD || '',
+                    2: getQuarterlyData(2).productRD || '',
+                    3: getQuarterlyData(3).productRD || '',
+                    4: getQuarterlyData(4).productRD || ''
+                  }
+                },
+                { id: 'q-16', name: '支付行政管理费', data: { 1: '1M/年', 2: '1M/年', 3: '1M/年', 4: '1M/年' } },
+                { id: 'q-17', name: '其他现金收支情况登记', data: { 1: '', 2: '', 3: '', 4: '' } },
+                { id: 'q-18', name: '入库（收入）数量合计', data: { 1: '', 2: '', 3: '', 4: '' } },
+                { id: 'q-19', name: '出库（现金支出）合计', data: { 1: '', 2: '', 3: '', 4: '' } },
+                { 
+                  id: 'q-20', 
+                  name: '本季库存（现金）结余数量', 
+                  data: {
+                    1: quarterData[1].cash ? `${quarterData[1].cash}M` : '',
+                    2: quarterData[2].cash ? `${quarterData[2].cash}M` : '',
+                    3: quarterData[3].cash ? `${quarterData[3].cash}M` : '',
+                    4: quarterData[4].cash ? `${quarterData[4].cash}M` : ''
+                  }
+                }
+              ];
+              
+              const yearEndSteps = [
+                { 
+                  id: 'yearend-1', 
+                  name: '支付利息/更新长期贷款/申请长期贷款', 
+                  data: `长期贷款: ${finance.longTermLoan.amount}M, 利息: ${(finance.longTermLoan.amount * finance.longTermLoan.interestRate).toFixed(2)}M`
+                },
+                { 
+                  id: 'yearend-2', 
+                  name: '支付设备维护费', 
+                  data: `${production.factories.reduce((sum, f) => sum + f.productionLines.reduce((lineSum, line) => lineSum + line.maintenanceCost, 0), 0)}M`
+                },
+                { id: 'yearend-3', name: '支付租金/购买厂房', data: '' },
+                { id: 'yearend-4', name: '计提折旧', data: '2M/季度' },
+                { 
+                  id: 'yearend-5', 
+                  name: '新市场开拓/ISO资格认证投资', 
+                  data: `${marketing.markets.filter(m => m.status === 'developing').length}个市场开发中`
+                },
+                { 
+                  id: 'yearend-6', 
+                  name: '结账', 
+                  data: `年度净利: ${finance.annualNetProfit}M`
+                }
+              ];
+              
+              // 构建CSV数据
+              let csvContent = '';
+              
+              // 添加表头
+              csvContent += `第${year}年运行控制表,,,,,\n`;
+              csvContent += '序号,请按照顺序执行下列各项操作，每执行完一项操作，请在相应的方格内打勾,季度1,季度2,季度3,季度4\n';
+              
+              // 添加年初操作
+              annualSteps.forEach((step, index) => {
+                // 用引号包裹包含逗号的数据，防止被Excel分割到不同列
+                const quotedData = step.data.includes(',') ? `"${step.data}"` : step.data;
+                csvContent += `,${step.name},${quotedData},,,\n`;
+              });
+              
+              // 从财务日志中获取各季度的操作记录和数据变化
+              const quarterlyFinancialData: Record<number, FinancialLogRecord[]> = {
+                1: yearFinancialLogs.filter(log => log.quarter === 1),
+                2: yearFinancialLogs.filter(log => log.quarter === 2),
+                3: yearFinancialLogs.filter(log => log.quarter === 3),
+                4: yearFinancialLogs.filter(log => log.quarter === 4)
+              };
+              
+              // 添加季度操作 - 只写入一次操作步骤，将全年各季度数据放在对应列中
+              quarterlySteps.forEach((step, index) => {
+                // 对于不同的操作步骤，根据实际情况获取对应季度的数据
+                let q1Data = '';
+                let q2Data = '';
+                let q3Data = '';
+                let q4Data = '';
+                
+                // 根据操作步骤ID获取对应的数据
+                switch (step.id) {
+                  case 'q-1':
+                    // 季初现金盘点 - 使用现金流量历史记录
+                    q1Data = quarterData[1].cash ? `${quarterData[1].cash}M` : '';
+                    q2Data = quarterData[2].cash ? `${quarterData[2].cash}M` : '';
+                    q3Data = quarterData[3].cash ? `${quarterData[3].cash}M` : '';
+                    q4Data = quarterData[4].cash ? `${quarterData[4].cash}M` : '';
+                    break;
+                  case 'q-2':
+                  case 'q-3':
+                  case 'q-4':
+                  case 'q-6':
+                  case 'q-8':
+                  case 'q-11':
+                  case 'q-12':
+                  case 'q-14':
+                  case 'q-15':
+                    // 这些步骤只显示对应季度及之前的数据
+                    q1Data = operation.currentQuarter >= 1 ? step.data[1] : '';
+                    q2Data = operation.currentQuarter >= 2 ? step.data[2] : '';
+                    q3Data = operation.currentQuarter >= 3 ? step.data[3] : '';
+                    q4Data = operation.currentQuarter >= 4 ? step.data[4] : '';
+                    break;
+                  case 'q-5':
+                  case 'q-7':
+                    // 原材料和成品数据 - 显示对应季度及之前的数据
+                    q1Data = operation.currentQuarter >= 1 ? step.data[1] : '';
+                    q2Data = operation.currentQuarter >= 2 ? step.data[2] : '';
+                    q3Data = operation.currentQuarter >= 3 ? step.data[3] : '';
+                    q4Data = operation.currentQuarter >= 4 ? step.data[4] : '';
+                    break;
+                  case 'q-20':
+                    // 本季库存（现金）结余数量 - 使用现金流量历史记录
+                    q1Data = quarterData[1].cash ? `${quarterData[1].cash}M` : '';
+                    q2Data = quarterData[2].cash ? `${quarterData[2].cash}M` : '';
+                    q3Data = quarterData[3].cash ? `${quarterData[3].cash}M` : '';
+                    q4Data = quarterData[4].cash ? `${quarterData[4].cash}M` : '';
+                    break;
+                  default:
+                    // 其他步骤留空，或者显示状态
+                    q1Data = '';
+                    q2Data = '';
+                    q3Data = '';
+                    q4Data = '';
+                }
+                
+                // 用引号包裹包含逗号的数据，防止被Excel分割到不同列
+                const quotedQ1Data = q1Data.includes(',') ? `"${q1Data}"` : q1Data;
+                const quotedQ2Data = q2Data.includes(',') ? `"${q2Data}"` : q2Data;
+                const quotedQ3Data = q3Data.includes(',') ? `"${q3Data}"` : q3Data;
+                const quotedQ4Data = q4Data.includes(',') ? `"${q4Data}"` : q4Data;
+                
+                // 构建行数据，将全年各季度数据放在对应列中
+                const rowData = `${index + 1},${step.name},${quotedQ1Data},${quotedQ2Data},${quotedQ3Data},${quotedQ4Data}\n`;
+                
+                csvContent += rowData;
+              });
+              
+              // 添加年末操作
+              yearEndSteps.forEach((step) => {
+                // 用引号包裹包含逗号的数据，防止被Excel分割到不同列
+                const quotedData = step.data.includes(',') ? `"${step.data}"` : step.data;
+                csvContent += `,${step.name},${quotedData},,,\n`;
+              });
+              
+              // 添加UTF-8 BOM头，解决Excel乱码问题
+              const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+              const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
+              
+              // 创建下载链接
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `第${year}年运行控制表.csv`;
+              
+              // 触发下载
+              document.body.appendChild(a);
+              a.click();
+              
+              // 清理
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }}
+            className="bg-green-500 text-white py-2 px-6 rounded-lg hover:bg-green-600 font-medium flex items-center space-x-2"
+          >
+            <span>导出运行控制表</span>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
           </button>
         </div>
@@ -255,7 +645,7 @@ const OperationCenter: React.FC = () => {
           </div>
         ) : (
           <div className="max-h-80 overflow-y-auto space-y-3">
-            {operation.operationLogs.slice(0, 5).map((log: { id: string; time: string; operator: string; action: string; dataChange: string }) => (
+            {operation.operationLogs.map((log: { id: string; time: string; operator: string; action: string; dataChange: string }) => (
               <div key={log.id} className="border border-gray-200 rounded-lg p-4 bg-white">
                 <div className="flex justify-between items-start mb-2">
                   <div className="font-medium">{log.action}</div>

@@ -46,3 +46,7 @@ next-env.d.ts
 
 # OS
 Thumbs.db
+
+# csv
+*.csv
+*.csv:Zone.Identifier
