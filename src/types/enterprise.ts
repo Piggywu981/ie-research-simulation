@@ -202,6 +202,8 @@ export interface CashFlowRecord {
 export interface OperationData {
   currentYear: number;
   currentQuarter: number;
+  // 游戏结束标志
+  isGameOver: boolean;
   // 操作记录
   operationLogs: {
     id: string;

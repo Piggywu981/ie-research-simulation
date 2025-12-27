@@ -147,6 +147,7 @@ const initialState: EnterpriseState = {
   operation: {
     currentYear: 1,
     currentQuarter: 1,
+    isGameOver: false,
     operationLogs: [],
     financialLogs: [
       // 初始财务日志
@@ -1883,6 +1884,7 @@ export const useEnterpriseStore = create<{
           ...state.state.operation,
           currentYear: newYear,
           currentQuarter: newQuarter,
+          isGameOver: newYear > 4,
           cashFlowHistory: newCashFlowHistory,
           financialLogs: [...allLogs, ...state.state.operation.financialLogs],
         },
