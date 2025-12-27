@@ -1,7 +1,7 @@
 'use client';
-
 import React, { useState } from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
+import { Factory, ProductionLine } from '../types/enterprise';
 
 const ProductionCenter: React.FC = () => {
   const { state, investProductR_D, addProductionLine, removeProductionLine, cancelProduction, startProduction } = useEnterpriseStore();
@@ -12,8 +12,8 @@ const ProductionCenter: React.FC = () => {
 
   // 计算已使用的生产线数量
   const getUsedProductionLines = (lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible') => {
-    return production.factories.reduce((total, factory) => {
-      return total + factory.productionLines.filter(line => line.type === lineType).length;
+    return production.factories.reduce((total: number, factory: any) => {
+      return total + factory.productionLines.filter((line: any) => line.type === lineType).length;
     }, 0);
   };
 
@@ -99,14 +99,14 @@ const ProductionCenter: React.FC = () => {
           <div className="bg-green-50 p-4 rounded-lg">
             <div className="text-sm text-green-600 mb-1">生产线数量</div>
             <div className="text-2xl font-bold text-green-800">
-              {production.factories.reduce((sum, factory) => sum + factory.productionLines.length, 0)}
+              {production.factories.reduce((sum: number, factory: any) => sum + factory.productionLines.length, 0)}
             </div>
           </div>
           <div className="bg-yellow-50 p-4 rounded-lg">
             <div className="text-sm text-yellow-600 mb-1">在制品数量</div>
             <div className="text-2xl font-bold text-yellow-800">
-              {production.factories.reduce((sum, factory) => 
-                sum + factory.productionLines.reduce((lineSum, line) => lineSum + line.inProgressProducts, 0), 0)}
+              {production.factories.reduce((sum: number, factory: any) => 
+                sum + factory.productionLines.reduce((lineSum: number, line: any) => lineSum + line.inProgressProducts, 0), 0)}
             </div>
           </div>
         </div>
@@ -116,7 +116,7 @@ const ProductionCenter: React.FC = () => {
       <div className="dashboard-card">
         <h2 className="dashboard-title">厂房与生产线布局</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {production.factories.map((factory) => (
+          {production.factories.map((factory: Factory) => (
             <div key={factory.id} className="border border-gray-200 rounded-lg p-4 bg-white shadow-sm">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-semibold">{factory.name}</h3>
@@ -127,7 +127,7 @@ const ProductionCenter: React.FC = () => {
               
               {/* 生产线列表 */}
               <div className="space-y-3">
-                {factory.productionLines.map((line) => (
+                {factory.productionLines.map((line: ProductionLine) => (
                   <div key={line.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
                     <div className="flex justify-between items-start mb-2">
                       <div>
@@ -336,9 +336,9 @@ const ProductionCenter: React.FC = () => {
               <button 
                 className="w-full bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
                 onClick={() => investProductR_D('P2', 6)}
-                disabled={production.productRD.P2.completed}
+                disabled={production.productRD.P2.completed || production.productRD.P2.totalInvestment > 0}
               >
-                投资 6M 研发
+                投资研发
               </button>
             </div>
           </div>
@@ -369,9 +369,9 @@ const ProductionCenter: React.FC = () => {
               <button 
                 className="w-full bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
                 onClick={() => investProductR_D('P3', 6)}
-                disabled={production.productRD.P3.completed}
+                disabled={production.productRD.P3.completed || production.productRD.P3.totalInvestment > 0}
               >
-                投资 6M 研发
+                投资研发
               </button>
             </div>
           </div>
@@ -402,9 +402,9 @@ const ProductionCenter: React.FC = () => {
               <button 
                 className="w-full bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
                 onClick={() => investProductR_D('P4', 6)}
-                disabled={production.productRD.P4.completed}
+                disabled={production.productRD.P4.completed || production.productRD.P4.totalInvestment > 0}
               >
-                投资 6M 研发
+                投资研发
               </button>
             </div>
           </div>

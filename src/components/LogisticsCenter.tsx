@@ -1,6 +1,7 @@
 'use client';
 import React, { useState } from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
+import { RawMaterial, FinishedProduct, RawMaterialOrder } from '../types/enterprise';
 
 const LogisticsCenter: React.FC = () => {
   const { state, placeRawMaterialOrder, cancelRawMaterialOrder } = useEnterpriseStore();
@@ -34,7 +35,7 @@ const LogisticsCenter: React.FC = () => {
 
   // 获取原材料的采购提前期
   const getLeadTime = (materialType: string) => {
-    const material = logistics.rawMaterials.find(m => m.type === materialType);
+    const material = logistics.rawMaterials.find((m: RawMaterial) => m.type === materialType);
     return material ? material.leadTime : 0;
   };
 
@@ -55,13 +56,13 @@ const LogisticsCenter: React.FC = () => {
           <div className="bg-yellow-50 p-4 rounded-lg">
             <div className="text-sm text-yellow-600 mb-1">原材料总数量</div>
             <div className="text-2xl font-bold text-yellow-800">
-              {logistics.rawMaterials.reduce((sum, material) => sum + material.quantity, 0)}
+              {logistics.rawMaterials.reduce((sum: number, material: RawMaterial) => sum + material.quantity, 0)}
             </div>
           </div>
           <div className="bg-purple-50 p-4 rounded-lg">
             <div className="text-sm text-purple-600 mb-1">成品总数量</div>
             <div className="text-2xl font-bold text-purple-800">
-              {logistics.finishedProducts.reduce((sum, product) => sum + product.quantity, 0)}
+              {logistics.finishedProducts.reduce((sum: number, product: FinishedProduct) => sum + product.quantity, 0)}
             </div>
           </div>
         </div>
@@ -73,7 +74,7 @@ const LogisticsCenter: React.FC = () => {
         <div className="dashboard-card">
           <h2 className="dashboard-title">原材料库存</h2>
           <div className="grid grid-cols-2 gap-4">
-            {logistics.rawMaterials.map((material) => (
+            {logistics.rawMaterials.map((material: RawMaterial) => (
               <div key={material.type} className="border border-gray-200 rounded-lg p-4 bg-white">
                 <div className="flex justify-between items-center mb-2">
                   <div className="font-medium">{material.name}</div>
@@ -103,7 +104,7 @@ const LogisticsCenter: React.FC = () => {
         <div className="dashboard-card">
           <h2 className="dashboard-title">成品库存</h2>
           <div className="grid grid-cols-2 gap-4">
-            {logistics.finishedProducts.map((product) => (
+            {logistics.finishedProducts.map((product: FinishedProduct) => (
               <div key={product.type} className="border border-gray-200 rounded-lg p-4 bg-white">
                 <div className="flex justify-between items-center mb-2">
                   <div className="font-medium">{product.name}</div>
@@ -141,7 +142,7 @@ const LogisticsCenter: React.FC = () => {
             </div>
           ) : (
             <div className="space-y-3">
-              {logistics.rawMaterialOrders.map((order) => (
+              {logistics.rawMaterialOrders.map((order: RawMaterialOrder) => (
                 <div key={order.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
                   <div className="flex justify-between items-start mb-2">
                     <div>
@@ -192,7 +193,7 @@ const LogisticsCenter: React.FC = () => {
                 onChange={handleInputChange}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2"
               >
-                {logistics.rawMaterials.map((material) => (
+                {logistics.rawMaterials.map((material: RawMaterial) => (
                   <option key={material.type} value={material.type}>
                     {material.name} ({material.type}) - 提前期 {material.leadTime}Q
                   </option>
@@ -228,13 +229,13 @@ const LogisticsCenter: React.FC = () => {
                 <div className="flex justify-between">
                   <span className="text-gray-600">单价:</span>
                   <span>
-                    {logistics.rawMaterials.find(m => m.type === orderForm.materialType)?.price}M
+                    {logistics.rawMaterials.find((m: RawMaterial) => m.type === orderForm.materialType)?.price}M
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">订单总金额:</span>
                   <span>
-                    {orderForm.quantity * (logistics.rawMaterials.find(m => m.type === orderForm.materialType)?.price || 0)}M
+                    {orderForm.quantity * (logistics.rawMaterials.find((m: RawMaterial) => m.type === orderForm.materialType)?.price || 0)}M
                   </span>
                 </div>
               </div>

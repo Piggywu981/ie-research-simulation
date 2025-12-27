@@ -1,6 +1,7 @@
 'use client';
 import React, { useState } from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
+import { FinancialLogRecord } from '../types/enterprise';
 import ProductionCenter from '../components/ProductionCenter';
 import LogisticsCenter from '../components/LogisticsCenter';
 import MarketingCenter from '../components/MarketingCenter';
@@ -288,7 +289,7 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {state.operation.financialLogs.map((log) => (
+                      {state.operation.financialLogs.map((log: FinancialLogRecord) => (
                         <tr key={log.id} className="hover:bg-gray-50">
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             第{log.year}年{log.quarter}Q
@@ -324,8 +325,8 @@ export default function Home() {
               <div className="dashboard-card">
                 <h2 className="dashboard-title">应收账款</h2>
                 <div className="space-y-2">
-                  {finance.accountsReceivable.map((amount, index) => {
-                    const totalAR = finance.accountsReceivable.reduce((sum, ar) => sum + ar, 0);
+                  {finance.accountsReceivable.map((amount: number, index: number) => {
+                    const totalAR = finance.accountsReceivable.reduce((sum: number, ar: number) => sum + ar, 0);
                     const percentage = totalAR > 0 ? (amount / totalAR) * 100 : 0;
                     
                     return (
@@ -346,7 +347,7 @@ export default function Home() {
                   <div className="mt-2 pt-2 border-t border-gray-200">
                     <div className="flex justify-between text-sm font-medium">
                       <span>总计</span>
-                      <span>{finance.accountsReceivable.reduce((sum, ar) => sum + ar, 0)}M</span>
+                      <span>{finance.accountsReceivable.reduce((sum: number, ar: number) => sum + ar, 0)}M</span>
                     </div>
                   </div>
                 </div>

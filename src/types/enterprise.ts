@@ -38,7 +38,7 @@ export interface ProductionLine {
   id: string;
   name: string;
   type: 'automatic' | 'semi-automatic' | 'manual' | 'flexible';
-  status: 'running' | 'converting' | 'maintaining' | 'idle' | 'selling';
+  status: 'running' | 'installing' | 'converting' | 'maintaining' | 'idle' | 'selling';
   product: 'P1' | 'P2' | 'P3' | 'P4' | null;
   purchasePrice: number;
   installationPeriod: number;
@@ -49,6 +49,8 @@ export interface ProductionLine {
   salvageValue: number;
   remainingLife: number; // 剩余使用年限
   inProgressProducts: number; // 在制品数量
+  installationProgress: number; // 安装进度（0到installationPeriod）
+  conversionProgress: number; // 转产进度（0到conversionPeriod）
 }
 
 // 厂房类型

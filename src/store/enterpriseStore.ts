@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord } from '../types/enterprise';
+import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order } from '../types/enterprise';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -61,6 +61,8 @@ const initialState: EnterpriseState = {
             salvageValue: 4, // 出售残值4M
             remainingLife: 15, // 剩余使用年限
             inProgressProducts: 1, // 1个P1在制品，价值2M
+            installationProgress: 0, // 已完成安装
+            conversionProgress: 0, // 未在转产
           },
         ],
       },
@@ -86,6 +88,8 @@ const initialState: EnterpriseState = {
             salvageValue: 4, // 出售残值4M
             remainingLife: 15, // 剩余使用年限
             inProgressProducts: 1, // 1个P1在制品，价值2M
+            installationProgress: 0, // 已完成安装
+            conversionProgress: 0, // 未在转产
           },
         ],
       },
@@ -135,7 +139,7 @@ const initialState: EnterpriseState = {
   },
   marketing: {
     markets: [
-      { type: 'local', name: '本地市场', status: 'available', developmentProgress: 1, annualMaintenanceCost: 1 }, // 已开通
+      { type: 'local', name: '本地市场', status: 'available', developmentProgress: 4, annualMaintenanceCost: 1 }, // 已开通，进度4Q
       { type: 'regional', name: '区域市场', status: 'developing', developmentProgress: 0, annualMaintenanceCost: 1 }, // 第二年可用
       { type: 'domestic', name: '国内市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 }, // 第三年可用
       { type: 'asian', name: '亚洲市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 },
@@ -204,15 +208,22 @@ export const useEnterpriseStore = create<{
   removeProductionLine: (factoryId: string, lineId: string) => void;
   cancelProduction: (lineId: string) => void;
   startProduction: (lineId: string) => void;
+  convertProductionLine: (lineId: string, newProduct: 'P1' | 'P2' | 'P3' | 'P4') => void;
   getProductionLineRemaining: (lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible') => number;
   // 物流操作
   placeRawMaterialOrder: (materialType: 'R1' | 'R2' | 'R3' | 'R4', quantity: number) => void;
+  cancelRawMaterialOrder: (orderId: string) => void;
   updateRawMaterialInventory: (materialType: 'R1' | 'R2' | 'R3' | 'R4', quantity: number) => void;
   updateFinishedProductInventory: (productType: 'P1' | 'P2' | 'P3' | 'P4', quantity: number) => void;
   // 营销操作
   placeAdvertisement: (amount: number) => void;
   selectOrder: (orderId: string) => void;
   deliverOrder: (orderId: string) => void;
+  addAvailableOrder: (order: Omit<Order, 'id' | 'isSelected' | 'isDelivered'>) => void;
+  removeAvailableOrder: (orderId: string) => void;
+  moveOrderToSelected: (orderId: string) => void;
+  investMarketDevelopment: (marketType: 'local' | 'regional' | 'domestic' | 'asian' | 'international') => void;
+  investISOCertification: (isoType: 'ISO9000' | 'ISO14000') => void;
   // 运营操作
   nextQuarter: () => void;
   addOperationLog: (action: string, dataChange: string) => void;
@@ -350,7 +361,7 @@ export const useEnterpriseStore = create<{
     }),
   
   // 添加财务日志
-  addFinancialLog: (description, cashChange, newCash) =>
+  addFinancialLog: (description: string, cashChange: number, newCash: number) =>
     set((state) => {
       const financialLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}`,
@@ -613,7 +624,8 @@ export const useEnterpriseStore = create<{
 
   // 获取生产线剩余数量
   getProductionLineRemaining: (lineType) => {
-    const state = useEnterpriseStore.getState().state;
+    // 直接使用get函数获取当前状态，避免循环引用
+    const state = get().state;
     // 计算已使用的生产线数量
     const usedCount = state.production.factories.reduce((total, factory) => {
       return total + factory.productionLines.filter(line => line.type === lineType).length;
@@ -698,7 +710,7 @@ export const useEnterpriseStore = create<{
         id: `line-${Date.now()}`,
         name: `${factory.name}${config.name}${factory.productionLines.length + 1}`,
         type: lineType,
-        status: 'running',
+        status: config.installationPeriod > 0 ? 'installing' : 'running',
         product: product,
         purchasePrice: config.purchasePrice,
         installationPeriod: config.installationPeriod,
@@ -708,7 +720,9 @@ export const useEnterpriseStore = create<{
         maintenanceCost: 1, // 所有生产线维护费都是1M/年
         salvageValue: config.salvageValue,
         remainingLife: config.remainingLife,
-        inProgressProducts: 0,
+        inProgressProducts: config.installationPeriod > 0 ? 0 : 1, // 安装中的生产线没有在制品
+        installationProgress: 0,
+        conversionProgress: 0,
       };
 
       // 更新厂房生产线列表
@@ -861,6 +875,89 @@ export const useEnterpriseStore = create<{
         operator: '企业1管理者',
         action: '开始生产',
         dataChange: `开始了${lineName}的生产，产品：${productName}`,
+      };
+
+      updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
+
+      return {
+        state: updatedState,
+      };
+    }),
+
+  // 生产线转产
+  convertProductionLine: (lineId, newProduct: 'P1' | 'P2' | 'P3' | 'P4') =>
+    set((state) => {
+      // 找到包含该生产线的厂房
+      let updatedFactories = [...state.state.production.factories];
+      let lineName = '';
+      let oldProduct = '';
+      let conversionCost = 0;
+
+      updatedFactories = updatedFactories.map(factory => {
+        const updatedLines = factory.productionLines.map(line => {
+          if (line.id === lineId && line.status === 'idle') {
+            lineName = line.name;
+            oldProduct = line.product || '无产品';
+            conversionCost = line.conversionCost;
+            
+            if (line.conversionPeriod > 0) {
+              // 需要转产周期，状态变为转产中
+              return {
+                ...line,
+                status: 'converting' as const,
+                product: newProduct,
+                conversionProgress: 0,
+              };
+            } else {
+              // 不需要转产周期，直接转产完成
+              return {
+                ...line,
+                product: newProduct,
+              };
+            }
+          }
+          return line;
+        });
+        return {
+          ...factory,
+          productionLines: updatedLines,
+        };
+      });
+
+      // 扣除转产费用
+      const updatedState = {
+        ...state.state,
+        production: {
+          ...state.state.production,
+          factories: updatedFactories,
+        },
+        finance: {
+          ...state.state.finance,
+          cash: state.state.finance.cash - conversionCost,
+        },
+      };
+
+      // 添加财务日志
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-conversion`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `生产线转产费用，${lineName}从${oldProduct}转产到${newProduct}，花费${conversionCost}M`,
+        cashChange: -conversionCost,
+        newCash: updatedState.finance.cash,
+        operator: '企业1管理者',
+      };
+
+      updatedState.operation.financialLogs = [financialLog, ...updatedState.operation.financialLogs];
+
+      // 添加操作日志
+      const newLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '生产线转产',
+        dataChange: `将${lineName}从${oldProduct}转产到${newProduct}，花费${conversionCost}M，预计${updatedFactories.flatMap(f => f.productionLines).find(l => l.id === lineId)?.conversionPeriod}季度完成`,
       };
 
       updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
@@ -1080,6 +1177,124 @@ export const useEnterpriseStore = create<{
       };
     }),
 
+  // 投资开拓市场
+  investMarketDevelopment: (marketType: 'local' | 'regional' | 'domestic' | 'asian' | 'international') =>
+    set((state) => {
+      const newMarkets = state.state.marketing.markets.map((market) => {
+        if (market.type === marketType && market.status === 'unavailable') {
+          // 计算投资金额（根据市场类型不同）
+          const investmentCost = market.type === 'local' ? 1 : market.type === 'regional' ? 1 : market.type === 'domestic' ? 2 : market.type === 'asian' ? 3 : 4;
+          
+          return {
+            ...market,
+            status: 'developing' as const,
+            developmentProgress: 0, // 点击按钮后不立即增加进度，下一回合开始增加
+          };
+        }
+        return market;
+      });
+      
+      return {
+        state: {
+          ...state.state,
+          marketing: {
+            ...state.state.marketing,
+            markets: newMarkets,
+          },
+        },
+      };
+    }),
+
+  // 投资ISO认证
+  investISOCertification: (isoType: 'ISO9000' | 'ISO14000') =>
+    set((state) => {
+      const newISOCertifications = state.state.marketing.isoCertifications.map((iso) => {
+        if (iso.type === isoType && iso.status === 'uncertified') {
+          // 计算投资金额（根据认证类型不同）
+          const investmentCost = iso.type === 'ISO9000' ? 3 : 4;
+          
+          return {
+            ...iso,
+            status: 'certifying' as const,
+            certificationProgress: 0, // 点击按钮后不立即增加进度，下一回合开始增加
+            totalCost: investmentCost,
+          };
+        }
+        return iso;
+      });
+      
+      return {
+        state: {
+          ...state.state,
+          marketing: {
+            ...state.state.marketing,
+            isoCertifications: newISOCertifications,
+          },
+        },
+      };
+    }),
+
+  // 新增可选订单
+  addAvailableOrder: (order) =>
+    set((state) => {
+      // 创建新订单，添加id和默认状态
+      const newOrder = {
+        id: `order-${Date.now()}`,
+        ...order,
+        totalAmount: order.quantity * order.unitPrice,
+        isSelected: false,
+        isDelivered: false,
+      };
+      
+      return {
+        state: {
+          ...state.state,
+          marketing: {
+            ...state.state.marketing,
+            availableOrders: [...state.state.marketing.availableOrders, newOrder],
+          },
+        },
+      };
+    }),
+
+  // 删除可选订单
+  removeAvailableOrder: (orderId) =>
+    set((state) => {
+      return {
+        state: {
+          ...state.state,
+          marketing: {
+            ...state.state.marketing,
+            availableOrders: state.state.marketing.availableOrders.filter(order => order.id !== orderId),
+          },
+        },
+      };
+    }),
+
+  // 移动订单到已选择订单
+  moveOrderToSelected: (orderId) =>
+    set((state) => {
+      const newAvailableOrders = state.state.marketing.availableOrders.filter(order => order.id !== orderId);
+      const orderToMove = state.state.marketing.availableOrders.find((order) => order.id === orderId);
+      
+      if (orderToMove) {
+        const newSelectedOrder = { ...orderToMove, isSelected: true };
+        return {
+          state: {
+            ...state.state,
+            marketing: {
+              ...state.state.marketing,
+              availableOrders: newAvailableOrders,
+              selectedOrders: [...state.state.marketing.selectedOrders, newSelectedOrder],
+            },
+          },
+        };
+      }
+      
+      return state;
+    }),
+
+  // 旧的selectOrder函数，保持不变
   selectOrder: (orderId) =>
     set((state) => {
       const newAvailableOrders = state.state.marketing.availableOrders.map((order) =>
@@ -1212,8 +1427,8 @@ export const useEnterpriseStore = create<{
         }
       }
       
-      // 产品研发投资日志
-      const rdLog: FinancialLogRecord = {
+      // 产品研发投资日志 - 只有当有研发投资时才记录
+      const rdLog: FinancialLogRecord | null = rdInvestment > 0 ? {
         id: `finlog-${Date.now()}-rd`,
         year: newYear,
         quarter: newQuarter,
@@ -1222,7 +1437,7 @@ export const useEnterpriseStore = create<{
         cashChange: -rdInvestment,
         newCash: initialCash + cashIncrease - rdInvestment,
         operator: '系统自动',
-      };
+      } : null;
       
       // 6. 处理原材料订单到货
       const newRawMaterials = [...state.state.logistics.rawMaterials];
@@ -1253,14 +1468,53 @@ export const useEnterpriseStore = create<{
         operator: '系统自动',
       };
       
-      // 7. 处理生产线生产完成（将在制品转换为成品）
+      // 7. 处理生产线状态变化（安装、转产、生产）
       const newFactories = [...state.state.production.factories];
       const newFinishedProducts = [...state.state.logistics.finishedProducts];
       
       let totalProduced = 0;
       newFactories.forEach((factory, factoryIndex) => {
         factory.productionLines.forEach((line, lineIndex) => {
-          if (line.status === 'running') {
+          // 处理安装中的生产线
+          if (line.status === 'installing') {
+            const newInstallationProgress = line.installationProgress + 1;
+            if (newInstallationProgress >= line.installationPeriod) {
+              // 安装完成，状态变为运行中
+              newFactories[factoryIndex].productionLines[lineIndex] = {
+                ...line,
+                status: 'running',
+                installationProgress: newInstallationProgress,
+                inProgressProducts: 1, // 开始生产，添加在制品
+              };
+            } else {
+              // 继续安装，更新进度
+              newFactories[factoryIndex].productionLines[lineIndex] = {
+                ...line,
+                installationProgress: newInstallationProgress,
+              };
+            }
+          }
+          // 处理转产中的生产线
+          else if (line.status === 'converting') {
+            const newConversionProgress = line.conversionProgress + 1;
+            if (newConversionProgress >= line.conversionPeriod) {
+              // 转产完成，状态变为运行中
+              newFactories[factoryIndex].productionLines[lineIndex] = {
+                ...line,
+                status: 'running',
+                conversionProgress: newConversionProgress,
+                inProgressProducts: 1, // 开始生产，添加在制品
+              };
+            } else {
+              // 继续转产，更新进度
+              newFactories[factoryIndex].productionLines[lineIndex] = {
+                ...line,
+                conversionProgress: newConversionProgress,
+              };
+            }
+          }
+          // 处理运行中的生产线
+          else if (line.status === 'running') {
             // 计算是否完成生产：根据生产线类型和生产周期
             let shouldProduce = false;
             
@@ -1338,8 +1592,8 @@ export const useEnterpriseStore = create<{
       // 总利息支出
       const totalInterest = longTermInterest + shortTermInterest;
       
-      // 10. 支付行政管理费（简化处理，假设每季度1M）
-      const adminCost = 1;
+      // 10. 支付行政管理费（每年结束时扣除1M）
+      const adminCost = state.state.operation.currentQuarter === 4 ? 1 : 0;
       
       // 11. 计提折旧（简化处理，假设每季度2M）
       const depreciationCost = 2;
@@ -1418,15 +1672,53 @@ export const useEnterpriseStore = create<{
           year: newYear,
           quarter: newQuarter,
           timestamp: Date.now(),
-          description: `第${state.state.operation.currentYear}年结束，年度结账，计提折旧：${depreciationCost}M，年度所得税：${taxAmount}M`,
+          description: `第${state.state.operation.currentYear}年结束，年度结账，行政管理费：${adminCost}M，计提折旧：${depreciationCost}M，年度所得税：${taxAmount}M`,
           cashChange: -taxAmount,
           newCash: finalCash,
           operator: '系统自动',
         };
       }
       
+      // 更新市场开发进度 - 按照季度跟进
+      const updatedMarkets = state.state.marketing.markets.map(market => {
+        if (market.status === 'developing') {
+          // 计算新进度（每季度+1）
+          const newProgress = market.developmentProgress + 1;
+          // 将年转换为季度：1年=4季度
+          const requiredProgress = market.type === 'local' || market.type === 'regional' ? 4 : 
+                                  market.type === 'domestic' ? 8 : 
+                                  market.type === 'asian' ? 12 : 16;
+          
+          return {
+            ...market,
+            developmentProgress: newProgress,
+            status: newProgress >= requiredProgress ? ('available' as const) : ('developing' as const)
+          };
+        }
+        return market;
+      });
+      
+      // 更新ISO认证进度
+      const updatedISOCertifications = state.state.marketing.isoCertifications.map(iso => {
+        if (iso.status === 'certifying') {
+          const newProgress = iso.certificationProgress + 1;
+          const requiredProgress = iso.type === 'ISO9000' ? 3 : 4;
+          
+          return {
+            ...iso,
+            certificationProgress: newProgress,
+            status: newProgress >= requiredProgress ? ('certified' as const) : ('certifying' as const)
+          };
+        }
+        return iso;
+      });
+      
       // 构建所有日志记录
-      const allLogs = [quarterStartLog, arLog, rdLog, materialArrivalLog, productionLog, quarterEndLog];
+      const allLogs = [quarterStartLog, arLog, materialArrivalLog, productionLog, quarterEndLog];
+      // 只有当有研发投资时才添加研发投资日志
+      if (rdLog) {
+        allLogs.splice(2, 0, rdLog); // 插入到arLog之后
+      }
       if (yearEndLog) {
         allLogs.push(yearEndLog);
       }
@@ -1457,6 +1749,11 @@ export const useEnterpriseStore = create<{
           rawMaterials: newRawMaterials,
           finishedProducts: newFinishedProducts,
           rawMaterialOrders: remainingOrders,
+        },
+        marketing: {
+          ...state.state.marketing,
+          markets: updatedMarkets,
+          isoCertifications: updatedISOCertifications,
         },
       };
       
