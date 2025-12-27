@@ -479,6 +479,38 @@ const OperationCenter: React.FC = () => {
                             }
                           }
                           
+                          // 特殊处理：支付行政管理费
+                          if (step.description.includes('支付行政管理费')) {
+                            // 行政管理费固定发生在每年第四季度
+                            if (quarter === 4) {
+                              // 查找该年度第四季度的季度末日志
+                              const quarterEndLogs = state.operation.financialLogs.filter(log => {
+                                return log.year === year && 
+                                       log.quarter === quarter && 
+                                       log.description.includes('季度结束现金变动') && 
+                                       log.description.includes('行政管理费');
+                              });
+                              
+                              if (quarterEndLogs.length > 0) {
+                                // 行政管理费固定为1M
+                                return (
+                                  <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                    <div className="text-sm font-medium text-blue-600">
+                                      -1M
+                                    </div>
+                                  </td>
+                                );
+                              }
+                            }
+                            
+                            // 非第四季度或没有找到日志，显示横线占位符
+                            return (
+                              <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
+                              </td>
+                            );
+                          }
+                          
                           // 特殊处理：收入合计和支出合计
                           if (step.description.includes('入库（收入）数量合计') || 
                               step.description.includes('出库（现金支出）合计')) {
