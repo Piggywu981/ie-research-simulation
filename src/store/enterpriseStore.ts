@@ -23,10 +23,10 @@ const initialState: EnterpriseState = {
       minAmount: 20, // 每次20M
       lendingPeriods: [1, 6], // 1月和6月放贷（对应季度1和季度3）
     },
-    accountsReceivable: [0, 0, 15, 0], // 3账期应收款15M
+    accountsReceivable: [0, 0, 0, 0], // 初始无应收账款
     accountsPayable: 0,
     taxesPayable: 0, // 初始无应交税
-    equity: 60 + 16 + 3 + 6 + 2 + 15 - 40, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料3 + 成品6 + 在制品2 + 应收15) - 现金40 = 62
+    equity: 60 + 16 + 3 + 6 + 2 - 40, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料3 + 成品6 + 在制品2) - 现金40 = 47
     retainedProfit: 7, // 利润留存
     annualNetProfit: 0, // 初始年度净利
   },
@@ -126,16 +126,7 @@ const initialState: EnterpriseState = {
       { type: 'P3', name: '产品3', quantity: 0, price: 6 }, // P3=2R2+R3+1M=4M，定价6M
       { type: 'P4', name: '产品4', quantity: 0, price: 8 }, // P4=R2+R3+2R4+1M=5M，定价8M
     ],
-    rawMaterialOrders: [
-      {
-        id: 'order-1',
-        materialType: 'R1',
-        quantity: 2,
-        price: 1,
-        orderPeriod: 1,
-        arrivalPeriod: 2, // 已下R1原料订单2个，1季度后到货
-      },
-    ], // 初始原料订单
+    rawMaterialOrders: [], // 初始无原料订单
   },
   marketing: {
     markets: [
@@ -1060,18 +1051,39 @@ export const useEnterpriseStore = create<{
         arrivalPeriod: state.state.operation.currentQuarter + material.leadTime,
       };
       
+      // 计算订单总金额
+      const totalCost = quantity * material.price;
+      // 扣除现金
+      const newCash = state.state.finance.cash - totalCost;
+      
       // 添加操作日志
       const operationLog = {
         id: `log-${Date.now()}`,
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
         action: '下原材料订单',
-        dataChange: `下${materialType}原料订单${quantity}个，预计${newOrder.arrivalPeriod}Q到货，总价${quantity * material.price}M`,
+        dataChange: `下${materialType}原料订单${quantity}个，预计${newOrder.arrivalPeriod}Q到货，总价${totalCost}M`,
+      };
+      
+      // 添加财务日志
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-material-order`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `下${materialType}原料订单${quantity}个，花费${totalCost}M，预计${newOrder.arrivalPeriod}Q到货`,
+        cashChange: -totalCost,
+        newCash,
+        operator: '企业1管理者',
       };
       
       return {
         state: {
           ...state.state,
+          finance: {
+            ...state.state.finance,
+            cash: newCash,
+          },
           logistics: {
             ...state.state.logistics,
             rawMaterialOrders: [...state.state.logistics.rawMaterialOrders, newOrder],
@@ -1079,6 +1091,7 @@ export const useEnterpriseStore = create<{
           operation: {
             ...state.state.operation,
             operationLogs: [operationLog, ...state.state.operation.operationLogs],
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
           },
         },
       };
@@ -1091,6 +1104,11 @@ export const useEnterpriseStore = create<{
       const orderToCancel = state.state.logistics.rawMaterialOrders.find(order => order.id === orderId);
       if (!orderToCancel) return state;
       
+      // 计算订单总金额，用于返还资金
+      const refundAmount = orderToCancel.quantity * orderToCancel.price;
+      // 返还现金
+      const newCash = state.state.finance.cash + refundAmount;
+      
       // 过滤掉要取消的订单
       const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => order.id !== orderId);
       
@@ -1100,12 +1118,28 @@ export const useEnterpriseStore = create<{
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
         action: '取消原材料订单',
-        dataChange: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个，预计${orderToCancel.arrivalPeriod}Q到货`,
+        dataChange: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个，预计${orderToCancel.arrivalPeriod}Q到货，返还资金${refundAmount}M`,
+      };
+      
+      // 添加财务日志
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-material-cancel`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个，返还资金${refundAmount}M`,
+        cashChange: refundAmount,
+        newCash,
+        operator: '企业1管理者',
       };
       
       return {
         state: {
           ...state.state,
+          finance: {
+            ...state.state.finance,
+            cash: newCash,
+          },
           logistics: {
             ...state.state.logistics,
             rawMaterialOrders: remainingOrders,
@@ -1113,6 +1147,7 @@ export const useEnterpriseStore = create<{
           operation: {
             ...state.state.operation,
             operationLogs: [operationLog, ...state.state.operation.operationLogs],
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
           },
         },
       };
@@ -1166,12 +1201,45 @@ export const useEnterpriseStore = create<{
         products: ['P1', 'P2'], // 覆盖P1和P2产品
       };
       
+      // 扣除广告费用
+      const newCash = state.state.finance.cash - amount;
+      
+      // 添加财务日志
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-ad`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `投放广告，花费${amount}M，覆盖本地和区域市场，产品P1和P2`,
+        cashChange: -amount,
+        newCash,
+        operator: '企业1管理者',
+      };
+      
+      // 添加操作日志
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '投放广告',
+        dataChange: `投放广告，花费${amount}M，覆盖本地和区域市场，产品P1和P2`,
+      };
+      
       return {
         state: {
           ...state.state,
+          finance: {
+            ...state.state.finance,
+            cash: newCash,
+          },
           marketing: {
             ...state.state.marketing,
             advertisements: [...state.state.marketing.advertisements, newAd],
+          },
+          operation: {
+            ...state.state.operation,
+            operationLogs: [operationLog, ...state.state.operation.operationLogs],
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
           },
         },
       };
@@ -1180,10 +1248,11 @@ export const useEnterpriseStore = create<{
   // 投资开拓市场
   investMarketDevelopment: (marketType: 'local' | 'regional' | 'domestic' | 'asian' | 'international') =>
     set((state) => {
+      let investmentCost = 0;
       const newMarkets = state.state.marketing.markets.map((market) => {
         if (market.type === marketType && market.status === 'unavailable') {
           // 计算投资金额（根据市场类型不同）
-          const investmentCost = market.type === 'local' ? 1 : market.type === 'regional' ? 1 : market.type === 'domestic' ? 2 : market.type === 'asian' ? 3 : 4;
+          investmentCost = market.type === 'local' ? 1 : market.type === 'regional' ? 1 : market.type === 'domestic' ? 2 : market.type === 'asian' ? 3 : 4;
           
           return {
             ...market,
@@ -1194,24 +1263,67 @@ export const useEnterpriseStore = create<{
         return market;
       });
       
-      return {
-        state: {
-          ...state.state,
-          marketing: {
-            ...state.state.marketing,
-            markets: newMarkets,
-          },
+      // 如果有投资成本，扣除现金并记录日志
+      let updatedState = {
+        ...state.state,
+        marketing: {
+          ...state.state.marketing,
+          markets: newMarkets,
         },
+      };
+      
+      if (investmentCost > 0) {
+        const newCash = state.state.finance.cash - investmentCost;
+        
+        // 添加财务日志
+        const financialLog: FinancialLogRecord = {
+          id: `finlog-${Date.now()}-market-invest`,
+          year: state.state.operation.currentYear,
+          quarter: state.state.operation.currentQuarter,
+          timestamp: Date.now(),
+          description: `投资开拓${marketType}市场，花费${investmentCost}M`,
+          cashChange: -investmentCost,
+          newCash,
+          operator: '企业1管理者',
+        };
+        
+        updatedState = {
+          ...updatedState,
+          finance: {
+            ...updatedState.finance,
+            cash: newCash,
+          },
+          operation: {
+            ...updatedState.operation,
+            financialLogs: [financialLog, ...updatedState.operation.financialLogs],
+          },
+        };
+        
+        // 添加操作日志
+        const operationLog = {
+          id: `log-${Date.now()}`,
+          time: new Date().toLocaleString(),
+          operator: '企业1管理者',
+          action: '投资市场开发',
+          dataChange: `投资开拓${marketType}市场，花费${investmentCost}M，预计${marketType === 'local' || marketType === 'regional' ? '1' : marketType === 'domestic' ? '2' : marketType === 'asian' ? '3' : '4'}年完成`,
+        };
+        
+        updatedState.operation.operationLogs = [operationLog, ...updatedState.operation.operationLogs];
+      }
+      
+      return {
+        state: updatedState,
       };
     }),
 
   // 投资ISO认证
   investISOCertification: (isoType: 'ISO9000' | 'ISO14000') =>
     set((state) => {
+      let investmentCost = 0;
       const newISOCertifications = state.state.marketing.isoCertifications.map((iso) => {
         if (iso.type === isoType && iso.status === 'uncertified') {
           // 计算投资金额（根据认证类型不同）
-          const investmentCost = iso.type === 'ISO9000' ? 3 : 4;
+          investmentCost = iso.type === 'ISO9000' ? 3 : 4;
           
           return {
             ...iso,
@@ -1223,14 +1335,56 @@ export const useEnterpriseStore = create<{
         return iso;
       });
       
-      return {
-        state: {
-          ...state.state,
-          marketing: {
-            ...state.state.marketing,
-            isoCertifications: newISOCertifications,
-          },
+      // 如果有投资成本，扣除现金并记录日志
+      let updatedState = {
+        ...state.state,
+        marketing: {
+          ...state.state.marketing,
+          isoCertifications: newISOCertifications,
         },
+      };
+      
+      if (investmentCost > 0) {
+        const newCash = state.state.finance.cash - investmentCost;
+        
+        // 添加财务日志
+        const financialLog: FinancialLogRecord = {
+          id: `finlog-${Date.now()}-iso-invest`,
+          year: state.state.operation.currentYear,
+          quarter: state.state.operation.currentQuarter,
+          timestamp: Date.now(),
+          description: `投资${isoType}认证，花费${investmentCost}M`,
+          cashChange: -investmentCost,
+          newCash,
+          operator: '企业1管理者',
+        };
+        
+        updatedState = {
+          ...updatedState,
+          finance: {
+            ...updatedState.finance,
+            cash: newCash,
+          },
+          operation: {
+            ...updatedState.operation,
+            financialLogs: [financialLog, ...updatedState.operation.financialLogs],
+          },
+        };
+        
+        // 添加操作日志
+        const operationLog = {
+          id: `log-${Date.now()}`,
+          time: new Date().toLocaleString(),
+          operator: '企业1管理者',
+          action: '投资ISO认证',
+          dataChange: `投资${isoType}认证，花费${investmentCost}M，预计${isoType === 'ISO9000' ? '3' : '4'}季度完成`,
+        };
+        
+        updatedState.operation.operationLogs = [operationLog, ...updatedState.operation.operationLogs];
+      }
+      
+      return {
+        state: updatedState,
       };
     }),
 
