@@ -53,7 +53,7 @@ const SaveLoadPanel: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-4 right-4 z-50">
+    <div className="relative z-50">
       {/* 存档管理按钮 */}
       <button
         onClick={() => setIsOpen(!isOpen)}
@@ -64,7 +64,7 @@ const SaveLoadPanel: React.FC = () => {
 
       {/* 存档面板 */}
       {isOpen && (
-        <div className="mt-2 bg-white rounded-lg shadow-xl p-4 w-96 max-h-[80vh] overflow-y-auto">
+        <div className="absolute right-0 mt-2 bg-white rounded-lg shadow-xl p-4 w-96 max-h-[80vh] overflow-y-auto">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-lg font-semibold">存档管理</h3>
             <div className="text-sm text-gray-500">

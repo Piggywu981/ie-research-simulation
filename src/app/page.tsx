@@ -22,8 +22,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* 存档管理面板 */}
-      <SaveLoadPanel />
       {/* 顶部导航栏 */}
       <header className="bg-white shadow-md">
         <div className="container mx-auto px-4 py-3 flex justify-between items-center">
@@ -43,6 +41,8 @@ export default function Home() {
               <span className="text-sm font-medium text-yellow-800">核心任务：</span>
               <span className="text-sm font-bold text-yellow-800">待支付应付税</span>
             </div>
+            {/* 存档管理面板 */}
+            <SaveLoadPanel />
           </div>
         </div>
       </header>
