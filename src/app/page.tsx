@@ -321,50 +321,45 @@ export default function Home() {
 
             {/* 右侧信息 */}
             <div className="space-y-4">
-              {/* 应收账款 */}
+              {/* 短期贷款 */}
               <div className="dashboard-card">
-                <h2 className="dashboard-title">应收账款</h2>
-                <div className="space-y-2">
-                  {finance.accountsReceivable.map((amount: number, index: number) => {
-                    const totalAR = finance.accountsReceivable.reduce((sum: number, ar: number) => sum + ar, 0);
-                    const percentage = totalAR > 0 ? (amount / totalAR) * 100 : 0;
-                    
-                    return (
-                      <div key={index}>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span>{index + 1}期</span>
-                          <span>{amount}M</span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div 
-                            className="bg-blue-500 h-2 rounded-full" 
-                            style={{ width: `${percentage}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <div className="mt-2 pt-2 border-t border-gray-200">
-                    <div className="flex justify-between text-sm font-medium">
-                      <span>总计</span>
-                      <span>{finance.accountsReceivable.reduce((sum: number, ar: number) => sum + ar, 0)}M</span>
-                    </div>
+                <h2 className="dashboard-title">短期贷款</h2>
+                <div className="bg-red-50 p-4 rounded-lg space-y-2">
+                  <div className="text-2xl font-bold text-red-800 text-center">
+                    {finance.shortTermLoan.amount}M
+                  </div>
+                  <div className="text-sm text-red-600 flex justify-between">
+                    <span>剩余期限:</span>
+                    <span>{finance.shortTermLoan.term}季度</span>
+                  </div>
+                  <div className="text-sm text-red-600 flex justify-between">
+                    <span>贷款利率:</span>
+                    <span>{finance.shortTermLoan.interestRate * 100}%</span>
                   </div>
                 </div>
               </div>
 
-              {/* 应交税 */}
+              {/* 长期贷款 */}
               <div className="dashboard-card">
-                <h2 className="dashboard-title">应交税</h2>
-                <div className="bg-red-50 p-4 rounded-lg text-center">
-                  <div className="text-2xl font-bold text-red-800">{finance.taxesPayable}M</div>
-                  <div className="text-sm text-red-600 mt-1">税务待缴提醒</div>
+                <h2 className="dashboard-title">长期贷款</h2>
+                <div className="bg-orange-50 p-4 rounded-lg space-y-2">
+                  <div className="text-2xl font-bold text-orange-800 text-center">
+                    {finance.longTermLoan.amount}M
+                  </div>
+                  <div className="text-sm text-orange-600 flex justify-between">
+                    <span>剩余期限:</span>
+                    <span>{finance.longTermLoan.term}季度</span>
+                  </div>
+                  <div className="text-sm text-orange-600 flex justify-between">
+                    <span>贷款利率:</span>
+                    <span>{finance.longTermLoan.interestRate * 100}%</span>
+                  </div>
                 </div>
               </div>
 
-              {/* 利润信息 */}
+              {/* 权益信息 */}
               <div className="dashboard-card">
-                <h2 className="dashboard-title">利润信息</h2>
+                <h2 className="dashboard-title">权益信息</h2>
                 <div className="space-y-2">
                   <div className="flex justify-between p-2 bg-gray-50 rounded">
                     <span className="text-sm">股东资本</span>
