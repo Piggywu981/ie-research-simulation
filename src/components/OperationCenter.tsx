@@ -161,72 +161,7 @@ const OperationCenter: React.FC = () => {
     },
   ];
 
-  // 获取当前季度的操作步骤
-  const getCurrentSteps = () => {
-    const baseSteps = [
-      '季初现金盘点',
-      '更新短贷/还本付息',
-      '申请短期贷款/高利贷',
-      '更新应付款/归还应付款',
-      '原材料入库/更新原料订单',
-      '下原料订单',
-      '更新生产/完工入库',
-      '生产线操作（投资/变卖/转产）',
-      '原材料/成品买卖（可选）',
-      '开始下一批生产',
-      '更新应收款/应收款收现',
-      '出售厂房（可选）',
-      '成品买卖（可选）',
-      '按订单交货',
-      '产品研发投资',
-      '支付行政管理费（年末统一支付）',
-      '登记其他现金收支',
-      '统计入库（收入）合计',
-      '统计出库（现金支出）合计',
-      '计算本季库存（现金）结余',
-    ];
 
-    // 如果是年末，添加年末步骤
-    if (operation.currentQuarter === 4) {
-      return [
-        ...baseSteps,
-        '支付利息/更新长期贷款/申请长期贷款',
-        '支付设备维护费',
-        '支付租金/购买厂房（可选）',
-        '计提折旧',
-        '市场开拓/ISO资格认证投资（可选）',
-        '结账（计算年度净利润）',
-      ];
-    }
-
-    return baseSteps;
-  };
-
-  // 生成报告数据
-  const generateReportData = () => {
-    // 获取所有存档文件
-    const saveFiles = getSaveFiles();
-    
-    // 按年份和季度组织的报告数据
-    const reportData: { [year: string]: { [quarter: string]: any[] } } = {
-      '1': { '1': [], '2': [], '3': [], '4': [] },
-      '2': { '1': [], '2': [], '3': [], '4': [] },
-      '3': { '1': [], '2': [], '3': [], '4': [] },
-      '4': { '1': [], '2': [], '3': [], '4': [] },
-    };
-
-    // 遍历所有财务日志
-    state.operation.financialLogs.forEach(log => {
-      const yearKey = log.year.toString();
-      const quarterKey = log.quarter.toString();
-      
-      if (reportData[yearKey] && reportData[yearKey][quarterKey]) {
-        reportData[yearKey][quarterKey].push(log);
-      }
-    });
-
-    return reportData;
-  };
 
   // 导出报告为CSV
   const exportReport = () => {
@@ -453,24 +388,60 @@ const OperationCenter: React.FC = () => {
                             });
                             
                             if (materialOrderLogs.length > 0) {
-                              // 格式化第一个原料订单日志
-                              const orderLog = materialOrderLogs[0];
-                              // 从日志描述中提取原料类型和数量
-                              const materialMatch = orderLog.description.match(/R[1234]/);
-                              const quantityMatch = orderLog.description.match(/\d+个/);
-                              
-                              const materialType = materialMatch ? materialMatch[0] : '';
-                              const quantity = quantityMatch ? quantityMatch[0].replace('个', '') : '';
+                              // 格式化所有原料订单日志
+                              const formattedOrders = materialOrderLogs.map(orderLog => {
+                                // 从日志描述中提取原料类型和数量
+                                const materialMatch = orderLog.description.match(/R[1234]/);
+                                const quantityMatch = orderLog.description.match(/\d+个/);
+                                
+                                const materialType = materialMatch ? materialMatch[0] : '';
+                                const quantity = quantityMatch ? quantityMatch[0].replace('个', '') : '';
+                                
+                                return `${orderLog.cashChange >= 0 ? '+' : ''}${orderLog.cashChange}M (${quantity}${materialType})`;
+                              });
                               
                               return (
                                 <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
                                   <div className="text-sm font-medium text-blue-600">
-                                    {orderLog.cashChange >= 0 ? '+' : ''}{orderLog.cashChange}M ({quantity}{materialType})
+                                    {formattedOrders.join(', ')}
                                   </div>
                                 </td>
                               );
                             } else {
                               // 如果没有原料订单，显示横线占位符
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
+                                </td>
+                              );
+                            }
+                          }
+                          
+                          // 特殊处理：原材料入库/更新原材料单
+                          if (step.description.includes('原材料入库/更新原材料单')) {
+                            // 计算当前季度对应的总季度数（第1年第1季度=1，第1年第2季度=2，...，第2年第1季度=5）
+                            const currentTotalPeriod = (year - 1) * 4 + quarter;
+                            
+                            // 查找预计在当前季度到货的原材料订单
+                            const arrivingOrders = state.logistics.rawMaterialOrders.filter(order => {
+                              return order.arrivalPeriod === currentTotalPeriod;
+                            });
+                            
+                            if (arrivingOrders.length > 0) {
+                              // 格式化所有到货的原料订单
+                              const formattedArrivals = arrivingOrders.map(order => {
+                                return `${order.quantity}${order.materialType}`;
+                              });
+                              
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="text-sm font-medium text-blue-600">
+                                    {formattedArrivals.join(', ')}
+                                  </div>
+                                </td>
+                              );
+                            } else {
+                              // 如果没有原材料入库，显示横线占位符
                               return (
                                 <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
                                   <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
@@ -509,6 +480,65 @@ const OperationCenter: React.FC = () => {
                                 <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
                               </td>
                             );
+                          }
+                          
+                          // 特殊处理：其他现金收支情况登记
+                          if (step.description.includes('其他现金收支情况登记')) {
+                            // 查找该季度的所有财务日志
+                            const allQuarterLogs = state.operation.financialLogs.filter(log => {
+                              return log.year === year && log.quarter === quarter;
+                            });
+                            
+                            // 过滤出其他现金收支（排除已在其他步骤处理的）
+                            const otherLogs = allQuarterLogs.filter(log => {
+                              // 排除已在其他步骤处理的日志类型
+                              return !log.description.includes('季初现金盘点') &&
+                                     !log.description.includes('应收账款') &&
+                                     !log.description.includes('原材料入库') &&
+                                     !log.description.includes('下原料订单') &&
+                                     !log.description.includes('产品研发投资') &&
+                                     !log.description.includes('支付行政管理费') &&
+                                     !log.description.includes('季度结束现金变动') &&
+                                     !log.description.includes('年度结束');
+                            });
+                            
+                            if (otherLogs.length > 0) {
+                              // 格式化每条其他收支记录
+                              const formattedLogs = otherLogs.map(log => {
+                                // 提取简洁描述
+                                let desc = log.description;
+                                // 简化描述，只保留关键信息
+                                if (desc.includes('广告')) {
+                                  desc = '广告投放';
+                                } else if (desc.includes('市场')) {
+                                  desc = '市场开拓';
+                                } else if (desc.includes('ISO')) {
+                                  desc = 'ISO认证';
+                                } else if (desc.includes('生产线')) {
+                                  desc = '生产线操作';
+                                } else if (desc.includes('折旧')) {
+                                  desc = '计提折旧';
+                                } else if (desc.includes('设备维护')) {
+                                  desc = '设备维护';
+                                }
+                                return `${log.cashChange >= 0 ? '+' : ''}${log.cashChange}M (${desc})`;
+                              });
+                              
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="text-sm font-medium text-blue-600">
+                                    {formattedLogs.join(', ')}
+                                  </div>
+                                </td>
+                              );
+                            } else {
+                              // 没有其他收支，显示横线占位符
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
+                                </td>
+                              );
+                            }
                           }
                           
                           // 特殊处理：收入合计和支出合计
