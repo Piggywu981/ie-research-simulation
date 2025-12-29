@@ -1521,12 +1521,17 @@ export const useEnterpriseStore = create<{
       
       // 季度初日志记录 - 季初现金盘点
       const initialCash = state.state.finance.cash;
+      // 获取当前产品库存情况
+      const currentFinishedProducts = state.state.logistics.finishedProducts.map(p => `${p.type}: ${p.quantity}`).join(', ');
+      // 获取当前原料库存情况
+      const currentRawMaterials = state.state.logistics.rawMaterials.map(m => `${m.type}: ${m.quantity}`).join(', ');
+      
       const quarterStartLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-start`,
         year: newYear,
         quarter: newQuarter,
         timestamp: Date.now(),
-        description: `第${newYear}年第${newQuarter}季度初现金盘点，现金余额：${initialCash}M`,
+        description: `第${newYear}年第${newQuarter}季度初现金盘点，现金余额：${initialCash}M，成品库存：${currentFinishedProducts}，原料库存：${currentRawMaterials}`,
         cashChange: 0,
         newCash: initialCash,
         operator: '系统自动',
