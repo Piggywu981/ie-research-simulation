@@ -312,62 +312,84 @@ const OperationCenter: React.FC = () => {
           }
           // 特殊处理：季初现金盘点
           else if (step.description.includes('季初现金盘点')) {
-            let cash = '-';
-            let finishedProducts = 'P1: 0, P2: 0, P3: 0, P4: 0';
-            let rawMaterials = 'R1: 0, R2: 0, R3: 0, R4: 0';
-            
-            // 针对不同季度设置特定数据（根据用户提供的示例数据）
-            if (year === 1) {
-              switch (quarter) {
-                case 1:
-                  cash = '40M';
-                  finishedProducts = 'P1: 0, P2: 0, P3: 0, P4: 0';
-                  rawMaterials = 'R1: 0, R2: 0, R3: 0, R4: 0';
-                  break;
-                case 2:
-                  cash = '28M';
-                  finishedProducts = 'P1: 0, P2: 0, P3: 0, P4: 0';
-                  rawMaterials = 'R1: 6, R2: 0, R3: 0, R4: 0';
-                  break;
-                case 3:
-                  cash = '26M';
-                  finishedProducts = 'P1: 2, P2: 0, P3: 0, P4: 0';
-                  rawMaterials = 'R1: 4, R2: 0, R3: 0, R4: 0';
-                  break;
-                case 4:
-                  cash = '24M';
-                  finishedProducts = 'P1: 4, P2: 0, P3: 0, P4: 0';
-                  rawMaterials = 'R1: 2, R2: 0, R3: 0, R4: 0';
-                  break;
+            // 第一年第一季度使用初始数据
+            if (year === 1 && quarter === 1) {
+              const cash = '40M';
+              const finishedProducts = ''; // 初始成品库存为0
+              const rawMaterials = ''; // 初始原材料库存为0
+              
+              // 格式化显示：现金总额，产品库存情况，原料库存情况
+              cellContent = `${cash}，${finishedProducts}，${rawMaterials}`;
+              
+              // 清理显示文本，确保没有多余的逗号和空格
+              cellContent = cellContent.replace(/，+/g, '，');
+              cellContent = cellContent.replace(/，，/g, '，');
+              cellContent = cellContent.replace(/，$/g, '');
+              cellContent = cellContent.replace(/\s+/g, ' ').trim();
+            } else {
+              // 其他季度使用实际数据
+              // 查找该季度的季初日志
+              const quarterStartLog = state.operation.financialLogs.find(log => {
+                return log.year === year && 
+                       log.quarter === quarter && 
+                       log.description.includes('季初现金盘点');
+              });
+              
+              // 查找该季度的现金数据
+              let cash = '-';
+              if (quarterStartLog) {
+                cash = `${quarterStartLog.newCash}M`;
+              } else {
+                // 尝试从现金流量历史记录获取
+                const cashFlow = state.operation.cashFlowHistory.find(record => {
+                  return record.year === year && record.quarter === quarter;
+                });
+                if (cashFlow) {
+                  cash = `${cashFlow.cash}M`;
+                }
               }
+              
+              // 直接使用实际的库存数据，而不是模拟数据
+              // 格式化产品库存，只显示数量大于0的产品
+              let displayFinishedProducts = '';
+              let displayRawMaterials = '';
+              
+              // 遍历所有财务日志，找到该季度之前的库存数据
+              const logsBeforeQuarter = state.operation.financialLogs.filter(log => {
+                return (log.year < year) || (log.year === year && log.quarter < quarter);
+              });
+              
+              // 如果有之前的日志，尝试从日志中提取库存信息
+              if (logsBeforeQuarter.length > 0) {
+                // 查找最近的季初或季度末日志
+                const recentLog = [...logsBeforeQuarter]
+                  .sort((a, b) => b.timestamp - a.timestamp)[0];
+                
+                // 从日志描述中提取库存信息
+                if (recentLog.description.includes('原料库存')) {
+                  // 解析原料库存
+                  const rawMaterialMatch = recentLog.description.match(/原料库存：([^，]+)/);
+                  if (rawMaterialMatch) {
+                    displayRawMaterials = rawMaterialMatch[1];
+                  }
+                  
+                  // 解析成品库存
+                  const finishedProductMatch = recentLog.description.match(/成品库存：([^，]+)/);
+                  if (finishedProductMatch) {
+                    displayFinishedProducts = finishedProductMatch[1];
+                  }
+                }
+              }
+              
+              // 格式化显示：现金总额，产品库存情况，原料库存情况
+              cellContent = `${cash}，${displayFinishedProducts}，${displayRawMaterials}`;
+              
+              // 清理显示文本，确保没有多余的逗号和空格
+              cellContent = cellContent.replace(/，+/g, '，');
+              cellContent = cellContent.replace(/，，/g, '，');
+              cellContent = cellContent.replace(/，$/g, '');
+              cellContent = cellContent.replace(/\s+/g, ' ').trim();
             }
-            
-            // 格式化产品库存，只显示数量大于0的产品
-            let displayFinishedProducts = '';
-            const finishedProductsArray = finishedProducts.split(', ');
-            const nonZeroFinishedProducts = finishedProductsArray.filter(product => {
-              const [, count] = product.split(': ');
-              return parseInt(count) > 0;
-            });
-            displayFinishedProducts = nonZeroFinishedProducts.length > 0 ? nonZeroFinishedProducts.join(', ') : '';
-            
-            // 格式化原料库存，只显示数量大于0的原料
-            let displayRawMaterials = '';
-            const rawMaterialsArray = rawMaterials.split(', ');
-            const nonZeroRawMaterials = rawMaterialsArray.filter(material => {
-              const [, count] = material.split(': ');
-              return parseInt(count) > 0;
-            });
-            displayRawMaterials = nonZeroRawMaterials.length > 0 ? nonZeroRawMaterials.join(', ') : '';
-            
-            // 格式化显示：现金总额，产品库存情况，原料库存情况
-            cellContent = `${cash}，${displayFinishedProducts}，${displayRawMaterials}`;
-            
-            // 清理显示文本，确保没有多余的逗号和空格
-            cellContent = cellContent.replace(/，+/g, '，');
-            cellContent = cellContent.replace(/，，/g, '，');
-            cellContent = cellContent.replace(/，$/g, '');
-            cellContent = cellContent.replace(/\s+/g, ' ').trim();
           }
           // 特殊处理：现金结余数量
           else if (step.description.includes('本季库存（现金）结余数量')) {
@@ -538,6 +560,36 @@ const OperationCenter: React.FC = () => {
                           
                           // 特殊处理：季初现金盘点
                           if (step.description.includes('季初现金盘点')) {
+                            // 第一年第一季度使用初始数据
+                            if (year === 1 && quarter === 1) {
+                              const cash = '40M';
+                              const finishedProducts = ''; // 初始成品库存为0
+                              const rawMaterials = ''; // 初始原材料库存为0
+                              
+                              // 格式化显示：现金总额，产品库存情况，原料库存情况
+                              const displayText = `${cash}，${finishedProducts}，${rawMaterials}`;
+                              
+                              // 清理显示文本，确保没有多余的逗号和空格
+                              let cleanedText = displayText;
+                              // 移除连续的逗号
+                              cleanedText = cleanedText.replace(/，+/g, '，');
+                              // 移除产品库存和原料库存之间的空逗号
+                              cleanedText = cleanedText.replace(/，，/g, '，');
+                              // 移除末尾的逗号
+                              cleanedText = cleanedText.replace(/，$/g, '');
+                              // 移除连续的空格
+                              cleanedText = cleanedText.replace(/\s+/g, ' ').trim();
+                              
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="text-sm font-medium text-blue-600">
+                                    {cleanedText}
+                                  </div>
+                                </td>
+                              );
+                            }
+                            
+                            // 其他季度使用实际数据
                             // 直接使用季度末日志中的数据，因为季初现金盘点的数据来自上一季度末
                             // 查找上一季度的季度末日志
                             const prevQuarter = quarter === 1 ? 4 : quarter - 1;
@@ -558,8 +610,6 @@ const OperationCenter: React.FC = () => {
                             });
                             
                             let cash = '-';
-                            let finishedProducts = 'P1: 0, P2: 0, P3: 0, P4: 0';
-                            let rawMaterials = 'R1: 0, R2: 0, R3: 0, R4: 0';
                             
                             // 优先使用本季度的季初日志
                             if (quarterStartLog) {
@@ -574,106 +624,24 @@ const OperationCenter: React.FC = () => {
                               cash = `${state.finance.cash}M`;
                             }
                             
-                            // 初始化库存计数
-                            const productCounts = { P1: 0, P2: 0, P3: 0, P4: 0 };
-                            const materialCounts = { R1: 0, R2: 0, R3: 0, R4: 0 };
-                            
-                            // 处理产品库存
-                            // 遍历所有生产日志，计算产品数量
-                            const productionLogs = state.operation.financialLogs.filter(log => {
-                              return log.year < year || 
-                                     (log.year === year && log.quarter < quarter);
-                            });
-                            
-                            productionLogs.forEach(log => {
-                              // 处理生产完成
-                              if (log.description.includes('更新生产/完工入库')) {
-                                // 假设每完成一次生产，P1增加2个
-                                productCounts.P1 += 2;
-                              }
-                            });
-                            
-                            // 处理原料库存
-                            // 遍历所有原料订单和入库日志
-                            const materialLogs = state.operation.financialLogs.filter(log => {
-                              return log.year < year || 
-                                     (log.year === year && log.quarter < quarter);
-                            });
-                            
-                            let totalOrdered = 0;
-                            let totalReceived = 0;
-                            
-                            materialLogs.forEach(log => {
-                              // 处理原料订单
-                              if (log.description.includes('下原料订单')) {
-                                const quantityMatch = log.description.match(/(\d+)个/);
-                                if (quantityMatch) {
-                                  totalOrdered += parseInt(quantityMatch[1]);
-                                }
-                              }
-                              // 处理原料入库
-                              else if (log.description.includes('原材料入库')) {
-                                const quantityMatch = log.description.match(/(\d+)个/);
-                                if (quantityMatch) {
-                                  totalReceived += parseInt(quantityMatch[1]);
-                                }
-                              }
-                            });
-                            
-                            // 计算当前原料数量
-                            const currentMaterial = totalOrdered - totalReceived;
-                            materialCounts.R1 = currentMaterial;
-                            
-                            // 格式化库存信息
-                            finishedProducts = `P1: ${productCounts.P1}, P2: ${productCounts.P2}, P3: ${productCounts.P3}, P4: ${productCounts.P4}`;
-                            rawMaterials = `R1: ${materialCounts.R1}, R2: ${materialCounts.R2}, R3: ${materialCounts.R3}, R4: ${materialCounts.R4}`;
-                            
-                            // 针对不同季度设置特定数据（根据用户提供的示例数据）
-                            if (year === 1) {
-                              switch (quarter) {
-                                case 1:
-                                  cash = '40M';
-                                  finishedProducts = 'P1: 0, P2: 0, P3: 0, P4: 0';
-                                  rawMaterials = 'R1: 0, R2: 0, R3: 0, R4: 0';
-                                  break;
-                                case 2:
-                                  cash = '28M';
-                                  finishedProducts = 'P1: 0, P2: 0, P3: 0, P4: 0';
-                                  rawMaterials = 'R1: 6, R2: 0, R3: 0, R4: 0';
-                                  break;
-                                case 3:
-                                  cash = '26M';
-                                  finishedProducts = 'P1: 2, P2: 0, P3: 0, P4: 0';
-                                  rawMaterials = 'R1: 4, R2: 0, R3: 0, R4: 0';
-                                  break;
-                                case 4:
-                                  cash = '24M';
-                                  finishedProducts = 'P1: 4, P2: 0, P3: 0, P4: 0';
-                                  rawMaterials = 'R1: 2, R2: 0, R3: 0, R4: 0';
-                                  break;
-                              }
-                            }
+                            // 直接使用实际的库存数据，而不是通过日志计算
+                            let finishedProducts = '';
+                            let rawMaterials = '';
                             
                             // 格式化产品库存，只显示数量大于0的产品
-                            let displayFinishedProducts = '';
-                            const finishedProductsArray = finishedProducts.split(', ');
-                            const nonZeroFinishedProducts = finishedProductsArray.filter(product => {
-                              const [, count] = product.split(': ');
-                              return parseInt(count) > 0;
-                            });
-                            displayFinishedProducts = nonZeroFinishedProducts.length > 0 ? nonZeroFinishedProducts.join(', ') : '';
+                            finishedProducts = state.logistics.finishedProducts
+                              .filter(product => product.quantity > 0)
+                              .map(product => `${product.type}: ${product.quantity}`)
+                              .join(', ');
                             
                             // 格式化原料库存，只显示数量大于0的原料
-                            let displayRawMaterials = '';
-                            const rawMaterialsArray = rawMaterials.split(', ');
-                            const nonZeroRawMaterials = rawMaterialsArray.filter(material => {
-                              const [, count] = material.split(': ');
-                              return parseInt(count) > 0;
-                            });
-                            displayRawMaterials = nonZeroRawMaterials.length > 0 ? nonZeroRawMaterials.join(', ') : '';
+                            rawMaterials = state.logistics.rawMaterials
+                              .filter(material => material.quantity > 0)
+                              .map(material => `${material.type}: ${material.quantity}`)
+                              .join(', ');
                             
                             // 格式化显示：现金总额，产品库存情况，原料库存情况
-                            const displayText = `${cash}，${displayFinishedProducts}，${displayRawMaterials}`;
+                            const displayText = `${cash}，${finishedProducts}，${rawMaterials}`;
                             
                             // 清理显示文本，确保没有多余的逗号和空格
                             let cleanedText = displayText;

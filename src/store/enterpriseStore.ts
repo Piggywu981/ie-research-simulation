@@ -826,54 +826,115 @@ export const useEnterpriseStore = create<{
   // 开始生产
   startProduction: (lineId) =>
     set((state) => {
-      // 找到包含该生产线的厂房
+      // 找到包含该生产线的厂房和生产线
       let updatedFactories = [...state.state.production.factories];
       let lineName = '';
       let productName = '';
+      let productType: 'P1' | 'P2' | 'P3' | 'P4' | null = null;
+      let canProduce = true;
+      let requiredMaterials = {} as Record<string, number>;
 
-      updatedFactories = updatedFactories.map(factory => {
-        const updatedLines = factory.productionLines.map(line => {
-          if (line.id === lineId) {
+      // 1. 首先找到生产线，确定需要的原材料
+      updatedFactories.forEach(factory => {
+        factory.productionLines.forEach(line => {
+          if (line.id === lineId && line.product) {
+            productType = line.product;
             lineName = line.name;
-            productName = line.product || '无产品';
-            // 重新开始生产，在制品数量与生产线类型相关
-            const productionQuantity = line.type === 'automatic' ? 1 : line.type === 'flexible' ? 1 : line.type === 'semi-automatic' ? 1 : 1;
-            return {
-              ...line,
-              status: 'running' as const, // 明确类型化为生产线状态联合类型
-              inProgressProducts: productionQuantity,
-            };
+            productName = line.product;
+            
+            // 计算该产品需要的原材料
+            if (productType === 'P1') {
+              requiredMaterials = { R1: 1 };
+            } else if (productType === 'P2') {
+              requiredMaterials = { R1: 1, R2: 1 };
+            } else if (productType === 'P3') {
+              requiredMaterials = { R2: 2, R3: 1 };
+            } else if (productType === 'P4') {
+              requiredMaterials = { R2: 1, R3: 1, R4: 2 };
+            }
           }
-          return line;
         });
-        return {
-          ...factory,
-          productionLines: updatedLines,
-        };
       });
 
-      const updatedState = {
-        ...state.state,
-        production: {
-          ...state.state.production,
-          factories: updatedFactories,
-        },
-      };
+      // 2. 检查原材料是否足够
+      if (productType) {
+        const currentRawMaterials = state.state.logistics.rawMaterials;
+        for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
+          const material = currentRawMaterials.find(m => m.type === materialType);
+          if (!material || material.quantity < requiredQuantity) {
+            canProduce = false;
+            break;
+          }
+        }
+      }
 
-      // 添加操作日志
-      const newLog = {
-        id: `log-${Date.now()}`,
-        time: new Date().toLocaleString(),
-        operator: '企业1管理者',
-        action: '开始生产',
-        dataChange: `开始了${lineName}的生产，产品：${productName}`,
-      };
+      // 3. 如果原材料足够，开始生产（设置在制品数量）
+      // 注意：原材料消耗在生产完成时（nextQuarter函数）处理，而不是在这里
+      if (canProduce && productType) {
+        // 更新生产线状态
+        updatedFactories = updatedFactories.map(factory => {
+          const updatedLines = factory.productionLines.map(line => {
+            if (line.id === lineId) {
+              // 重新开始生产，在制品数量与生产线类型相关
+              const productionQuantity = line.type === 'automatic' ? 1 : line.type === 'flexible' ? 1 : line.type === 'semi-automatic' ? 1 : 1;
+              return {
+                ...line,
+                status: 'running' as const, // 明确类型化为生产线状态联合类型
+                inProgressProducts: productionQuantity,
+              };
+            }
+            return line;
+          });
+          return {
+            ...factory,
+            productionLines: updatedLines,
+          };
+        });
 
-      updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
+        const updatedState = {
+          ...state.state,
+          production: {
+            ...state.state.production,
+            factories: updatedFactories,
+          },
+        };
 
-      return {
-        state: updatedState,
-      };
+        // 添加操作日志
+        const newLog = {
+          id: `log-${Date.now()}`,
+          time: new Date().toLocaleString(),
+          operator: '企业1管理者',
+          action: '开始生产',
+          dataChange: `开始了${lineName}的生产，产品：${productName}，需要原材料：${Object.entries(requiredMaterials).map(([type, qty]) => `${qty}${type}`).join('+')}`,
+        };
+
+        updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
+
+        return {
+          state: updatedState,
+        };
+      } else {
+        // 原材料不足，添加操作日志但不开始生产
+        const newLog = {
+          id: `log-${Date.now()}`,
+          time: new Date().toLocaleString(),
+          operator: '企业1管理者',
+          action: '开始生产',
+          dataChange: `尝试开始${lineName}的生产，产品：${productName}，但原材料不足，无法生产`,
+        };
+
+        const updatedState = {
+          ...state.state,
+          operation: {
+            ...state.state.operation,
+            operationLogs: [newLog, ...state.state.operation.operationLogs],
+          },
+        };
+
+        return {
+          state: updatedState,
+        };
+      }
     }),
 
   // 生产线转产
@@ -1600,7 +1661,7 @@ export const useEnterpriseStore = create<{
       } : null;
       
       // 6. 处理原材料订单到货
-      const newRawMaterials = [...state.state.logistics.rawMaterials];
+      let newRawMaterials = [...state.state.logistics.rawMaterials];
       const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => {
         if (order.arrivalPeriod === state.state.operation.currentQuarter) {
           // 订单到货，更新原材料库存
@@ -1690,22 +1751,98 @@ export const useEnterpriseStore = create<{
             }
             
             if (shouldProduce && line.inProgressProducts > 0) {
-              // 生产完成，将在制品转换为成品
-              const productIndex = newFinishedProducts.findIndex(p => p.type === line.product!);
-              if (productIndex !== -1) {
-                newFinishedProducts[productIndex] = {
-                  ...newFinishedProducts[productIndex],
-                  quantity: newFinishedProducts[productIndex].quantity + line.inProgressProducts,
-                };
-                totalProduced += line.inProgressProducts;
+              // 计算该产品需要的原材料
+              const requiredMaterials: Record<string, number> = {};
+              if (line.product === 'P1') {
+                requiredMaterials['R1'] = 1;
+              } else if (line.product === 'P2') {
+                requiredMaterials['R1'] = 1;
+                requiredMaterials['R2'] = 1;
+              } else if (line.product === 'P3') {
+                requiredMaterials['R2'] = 2;
+                requiredMaterials['R3'] = 1;
+              } else if (line.product === 'P4') {
+                requiredMaterials['R2'] = 1;
+                requiredMaterials['R3'] = 1;
+                requiredMaterials['R4'] = 2;
               }
+              
+              // 检查原材料是否足够
+              let canProduce = true;
+              for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
+                const material = newRawMaterials.find(m => m.type === materialType);
+                if (!material || material.quantity < requiredQuantity) {
+                  canProduce = false;
+                  break;
+                }
+              }
+              
+              if (canProduce) {
+                // 消耗原材料
+                for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
+                  newRawMaterials = newRawMaterials.map(material => {
+                    if (material.type === materialType) {
+                      return {
+                        ...material,
+                        quantity: material.quantity - requiredQuantity
+                      };
+                    }
+                    return material;
+                  });
+                }
+                
+                // 生产完成，将在制品转换为成品
+                const productIndex = newFinishedProducts.findIndex(p => p.type === line.product!);
+                if (productIndex !== -1) {
+                  newFinishedProducts[productIndex] = {
+                    ...newFinishedProducts[productIndex],
+                    quantity: newFinishedProducts[productIndex].quantity + line.inProgressProducts,
+                  };
+                  totalProduced += line.inProgressProducts;
+                }
+              }
+              
+              // 重置在制品数量，准备开始下一批生产
+              line.inProgressProducts = 0;
             }
             
-            // 重新开始生产，设置在制品数量
-            let productionQuantity = 0;
-            if (line.status === 'running') {
-              // 所有运行中的生产线都保持1个在制品，直到生产完成
-              productionQuantity = 1;
+            // 开始下一批生产前检查原材料是否足够
+            let productionQuantity = line.inProgressProducts;
+            if (line.status === 'running' && line.product && line.inProgressProducts === 0) {
+              // 计算该产品需要的原材料
+              const requiredMaterials: Record<string, number> = {};
+              if (line.product === 'P1') {
+                requiredMaterials['R1'] = 1;
+              } else if (line.product === 'P2') {
+                requiredMaterials['R1'] = 1;
+                requiredMaterials['R2'] = 1;
+              } else if (line.product === 'P3') {
+                requiredMaterials['R2'] = 2;
+                requiredMaterials['R3'] = 1;
+              } else if (line.product === 'P4') {
+                requiredMaterials['R2'] = 1;
+                requiredMaterials['R3'] = 1;
+                requiredMaterials['R4'] = 2;
+              }
+              
+              // 检查原材料是否足够
+              let canProduce = true;
+              for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
+                const material = newRawMaterials.find(m => m.type === materialType);
+                if (!material || material.quantity < requiredQuantity) {
+                  canProduce = false;
+                  break;
+                }
+              }
+              
+              // 如果原材料足够，开始生产（不消耗原材料，原材料消耗在生产完成时处理）
+              if (canProduce) {
+                // 设置在制品数量为1，开始生产
+                productionQuantity = 1;
+              } else {
+                // 原材料不足，不生产，保持在制品数量为0
+                productionQuantity = 0;
+              }
             }
             
             newFactories[factoryIndex].productionLines[lineIndex] = {
