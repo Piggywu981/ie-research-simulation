@@ -213,8 +213,74 @@ const OperationCenter: React.FC = () => {
           
           let cellContent = '';
           
+          // 特殊处理：开始下一批生产
+          if (step.description.includes('开始下一批生产')) {
+            // 查找该季度的生产相关日志
+            const productionLogs = state.operation.operationLogs.filter(log => {
+              return log.action.includes('开始生产') && 
+                     (log.dataChange || '').includes(`第${year}年第${quarter}季度`);
+            });
+            
+            // 获取所有运行中的生产线，计算生产费用
+            const runningLines = state.production.factories.flatMap(factory => 
+              factory.productionLines.filter(line => line.status === 'running')
+            );
+            
+            // 如果有运行中的生产线，计算生产费用
+            if (runningLines.length > 0) {
+              // 计算每条生产线的生产费用（只计算加工费）
+              const productionCosts = runningLines.map(line => {
+                // 只计算加工费，因为原料已经订购过了
+                // 加工费用：根据生产线类型不同
+                const processingCost = line.type === 'automatic' ? 1 : 
+                                     line.type === 'semi-automatic' ? 1 : 
+                                     line.type === 'manual' ? 1 : 1;
+                
+                // 总生产费用
+                const totalCost = processingCost;
+                
+                return {
+                  cost: -totalCost, // 支出为负数
+                  product: line.product,
+                  lineType: line.type
+                };
+              });
+              
+              // 合并同类项：按产品和生产线类型分组
+              const groupedCosts = productionCosts.reduce((acc, item) => {
+                // 确保product和lineType是字符串
+                const product = item.product || '未知产品';
+                const lineType = item.lineType || '未知类型';
+                const key = `${product}-${lineType}`;
+                if (!acc[key]) {
+                  acc[key] = {
+                    cost: 0,
+                    product: product,
+                    lineType: lineType,
+                    count: 0
+                  };
+                }
+                acc[key].cost += item.cost;
+                acc[key].count += 1;
+                return acc;
+              }, {} as Record<string, { cost: number; product: string; lineType: string; count: number }>);
+              
+              // 格式化生产记录
+              const formattedProduction = Object.values(groupedCosts).map(item => {
+                // 简化生产线类型显示
+                const simplifiedLineType = item.lineType === 'automatic' ? '自' : 
+                                        item.lineType === 'semi-automatic' ? '半' :
+                                        item.lineType === 'manual' ? '手' : '柔';
+                return `${item.cost}M (${item.product}，${simplifiedLineType})`;
+              });
+              
+              cellContent = formattedProduction.join('/');
+            } else {
+              cellContent = '-';
+            }
+          }
           // 特殊处理：其他现金收支情况登记 - 只保留广告投放
-          if (step.description.includes('其他现金收支情况登记')) {
+          else if (step.description.includes('其他现金收支情况登记')) {
             // 查找该季度的所有财务日志
             const allQuarterLogs = state.operation.financialLogs.filter(log => {
               return log.year === year && log.quarter === quarter;
@@ -824,8 +890,85 @@ const OperationCenter: React.FC = () => {
                             );
                           }
                           
+                          // 特殊处理：开始下一批生产
+                          else if (step.description.includes('开始下一批生产')) {
+                            // 查找该季度的生产相关日志
+                            const productionLogs = state.operation.operationLogs.filter(log => {
+                              return log.action.includes('开始生产') && 
+                                     (log.dataChange || '').includes(`第${year}年第${quarter}季度`);
+                            });
+                            
+                            // 获取所有运行中的生产线，计算生产费用
+                            const runningLines = state.production.factories.flatMap(factory => 
+                              factory.productionLines.filter(line => line.status === 'running')
+                            );
+                            
+                            // 如果有运行中的生产线，计算生产费用
+                            if (runningLines.length > 0) {
+                              // 计算每条生产线的生产费用（只计算加工费）
+                              const productionCosts = runningLines.map(line => {
+                                // 只计算加工费，因为原料已经订购过了
+                                // 加工费用：根据生产线类型不同
+                                const processingCost = line.type === 'automatic' ? 1 : 
+                                                     line.type === 'semi-automatic' ? 1 : 
+                                                     line.type === 'manual' ? 1 : 1;
+                                
+                                // 总生产费用
+                                const totalCost = processingCost;
+                                
+                                return {
+                                  cost: -totalCost, // 支出为负数
+                                  product: line.product,
+                                  lineType: line.type
+                                };
+                              });
+                              
+                              // 合并同类项：按产品和生产线类型分组
+                              const groupedCosts = productionCosts.reduce((acc, item) => {
+                                // 确保product和lineType是字符串
+                                const product = item.product || '未知产品';
+                                const lineType = item.lineType || '未知类型';
+                                const key = `${product}-${lineType}`;
+                                if (!acc[key]) {
+                                  acc[key] = {
+                                    cost: 0,
+                                    product: product,
+                                    lineType: lineType,
+                                    count: 0
+                                  };
+                                }
+                                acc[key].cost += item.cost;
+                                acc[key].count += 1;
+                                return acc;
+                              }, {} as Record<string, { cost: number; product: string; lineType: string; count: number }>);
+                              
+                              // 格式化生产记录
+                              const formattedProduction = Object.values(groupedCosts).map(item => {
+                                // 简化生产线类型显示
+                                const simplifiedLineType = item.lineType === 'automatic' ? '自' : 
+                                                        item.lineType === 'semi-automatic' ? '半' :
+                                                        item.lineType === 'manual' ? '手' : '柔';
+                                return `${item.cost}M (${item.product}，${simplifiedLineType})`;
+                              });
+                              
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="text-sm font-medium text-blue-600">
+                                    {formattedProduction.join('/')}
+                                  </div>
+                                </td>
+                              );
+                            } else {
+                              // 没有生产记录，显示横线占位符
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
+                                </td>
+                              );
+                            }
+                          }
                           // 特殊处理：其他现金收支情况登记
-                          if (step.description.includes('其他现金收支情况登记')) {
+                          else if (step.description.includes('其他现金收支情况登记')) {
                             // 查找该季度的所有财务日志
                             const allQuarterLogs = state.operation.financialLogs.filter(log => {
                               return log.year === year && log.quarter === quarter;
