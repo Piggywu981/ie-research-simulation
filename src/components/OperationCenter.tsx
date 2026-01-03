@@ -454,6 +454,78 @@ const OperationCenter: React.FC = () => {
               cellContent = '-';
             }
           }
+          // 特殊处理：产品研发投资
+          else if (step.description.includes('产品研发投资')) {
+            // 查找该季度的研发投资日志
+            const rdLogs = state.operation.financialLogs.filter(log => {
+              return log.year === year && 
+                     log.quarter === quarter && 
+                     (log.description.includes('产品研发投资') || 
+                      log.description.includes('投资') && 
+                      (log.description.includes('P2') || 
+                       log.description.includes('P3') || 
+                       log.description.includes('P4')));
+            });
+             
+            if (rdLogs.length > 0) {
+              // 格式化第一个研发日志
+              const rdLog = rdLogs[0];
+              // 从日志描述中提取产品名称
+              const productMatch = rdLog.description.match(/P[234]/);
+              const productName = productMatch ? productMatch[0] : '';
+               
+              cellContent = `${rdLog.cashChange >= 0 ? '+' : ''}${rdLog.cashChange}M ${productName ? `(${productName})` : ''}`;
+            } else {
+              cellContent = '-';
+            }
+          }
+          // 特殊处理：下原料订单
+          else if (step.description.includes('下原料订单')) {
+            // 查找该季度的原料订单日志
+            const materialOrderLogs = state.operation.financialLogs.filter(log => {
+              return log.year === year && 
+                     log.quarter === quarter && 
+                     log.description.includes('下') && 
+                     log.description.includes('原料订单');
+            });
+             
+            if (materialOrderLogs.length > 0) {
+              // 格式化所有原料订单日志
+              const formattedOrders = materialOrderLogs.map(orderLog => {
+                // 从日志描述中提取原料类型和数量
+                const materialMatch = orderLog.description.match(/R[1234]/);
+                const quantityMatch = orderLog.description.match(/\d+个/);
+                 
+                const materialType = materialMatch ? materialMatch[0] : '';
+                const quantity = quantityMatch ? quantityMatch[0].replace('个', '') : '';
+                 
+                return `${orderLog.cashChange >= 0 ? '+' : ''}${orderLog.cashChange}M (${quantity}${materialType})`;
+              });
+              cellContent = formattedOrders.join(', ');
+            } else {
+              cellContent = '-';
+            }
+          }
+          // 特殊处理：原材料入库/更新原材料单
+          else if (step.description.includes('原材料入库/更新原材料单')) {
+            // 计算当前季度对应的总季度数（第1年第1季度=1，第1年第2季度=2，...，第2年第1季度=5）
+            const currentTotalPeriod = (year - 1) * 4 + quarter;
+             
+            // 查找预计在当前季度到货的原材料订单
+            const arrivingOrders = state.logistics.rawMaterialOrders.filter(order => {
+              return order.arrivalPeriod === currentTotalPeriod;
+            });
+             
+            if (arrivingOrders.length > 0) {
+              // 格式化所有到货的原料订单
+              const formattedArrivals = arrivingOrders.map(order => {
+                return `${order.quantity}${order.materialType}`;
+              });
+              cellContent = formattedArrivals.join(', ');
+            } else {
+              cellContent = '-';
+            }
+          }
           // 特殊处理：支付行政管理费（固定在第四季度）
           else if (step.description.includes('支付行政管理费')) {
             if (quarter === 4) {
@@ -602,10 +674,10 @@ const OperationCenter: React.FC = () => {
                               const cash = '40M';
                               const finishedProducts = ''; // 初始成品库存为0
                               const rawMaterials = ''; // 初始原材料库存为0
-                              
+                               
                               // 格式化显示：现金总额，产品库存情况，原料库存情况
                               const displayText = `${cash}，${finishedProducts}，${rawMaterials}`;
-                              
+                               
                               // 清理显示文本，确保没有多余的逗号和空格
                               let cleanedText = displayText;
                               // 移除连续的逗号
@@ -616,7 +688,7 @@ const OperationCenter: React.FC = () => {
                               cleanedText = cleanedText.replace(/，$/g, '');
                               // 移除连续的空格
                               cleanedText = cleanedText.replace(/\s+/g, ' ').trim();
-                              
+                               
                               return (
                                 <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
                                   <div className="text-sm font-medium text-blue-600">
@@ -625,43 +697,43 @@ const OperationCenter: React.FC = () => {
                                 </td>
                               );
                             }
-                            
+                             
                             // 其他季度尝试从存档中获取数据
                             let cash = '-';
                             let finishedProducts = '';
                             let rawMaterials = '';
-                            
+                             
                             // 获取所有存档
                             const allSaveFiles = getSaveFiles();
-                            
+                             
                             // 计算目标季度（季初现金盘点的数据来自上一季度末）
                             const targetQuarter = quarter === 1 ? 4 : quarter - 1;
                             const targetYear = quarter === 1 ? year - 1 : year;
-                            
+                             
                             // 查找对应季度末的存档
                             const targetSaveFiles = allSaveFiles.filter(saveFile => {
                               // 检查存档中的年份和季度
                               const saveYear = saveFile.state.operation.currentYear;
                               const saveQuarter = saveFile.state.operation.currentQuarter;
-                              
+                               
                               // 匹配目标年份和季度
                               return saveYear === targetYear && saveQuarter === targetQuarter;
                             });
-                            
+                             
                             // 如果找到匹配的存档，使用最新的一个
                             if (targetSaveFiles.length > 0) {
                               // 按时间戳排序，获取最新的存档
                               const latestSave = [...targetSaveFiles].sort((a, b) => b.timestamp - a.timestamp)[0];
-                              
+                               
                               // 使用存档中的数据
                               cash = `${latestSave.state.finance.cash}M`;
-                              
+                               
                               // 格式化产品库存，只显示数量大于0的产品
                               finishedProducts = latestSave.state.logistics.finishedProducts
                                 .filter(product => product.quantity > 0)
                                 .map(product => `${product.type}: ${product.quantity}`)
                                 .join(', ');
-                              
+                               
                               // 格式化原料库存，只显示数量大于0的原料
                               rawMaterials = latestSave.state.logistics.rawMaterials
                                 .filter(material => material.quantity > 0)
@@ -669,51 +741,57 @@ const OperationCenter: React.FC = () => {
                                 .join(', ');
                             } else {
                               // 如果没有找到匹配的存档，回退到原来的逻辑
-                              // 直接使用季度末日志中的数据，因为季初现金盘点的数据来自上一季度末
-                              // 查找上一季度的季度末日志
-                              const quarterEndLog = state.operation.financialLogs.find(log => {
-                                return log.year === targetYear && 
-                                       log.quarter === targetQuarter && 
-                                       log.description.includes('季度结束现金变动');
-                              });
-                              
-                              // 查找本季度的季初日志
+                              // 查找该季度的季初日志
                               const quarterStartLog = state.operation.financialLogs.find(log => {
                                 return log.year === year && 
                                        log.quarter === quarter && 
                                        log.description.includes('季初现金盘点');
                               });
-                              
-                              // 优先使用本季度的季初日志
+                               
+                              // 查找该季度的现金数据
                               if (quarterStartLog) {
                                 cash = `${quarterStartLog.newCash}M`;
+                              } else {
+                                // 尝试从现金流量历史记录获取
+                                const cashFlow = state.operation.cashFlowHistory.find(record => {
+                                  return record.year === year && record.quarter === quarter;
+                                });
+                                if (cashFlow) {
+                                  cash = `${cashFlow.cash}M`;
+                                }
                               }
-                              // 如果没有季初日志，使用上一季度的季度末日志
-                              else if (quarterEndLog) {
-                                cash = `${quarterEndLog.newCash}M`;
+                               
+                              // 遍历所有财务日志，找到该季度之前的库存数据
+                              const logsBeforeQuarter = state.operation.financialLogs.filter(log => {
+                                return (log.year < year) || (log.year === year && log.quarter < quarter);
+                              });
+                               
+                              // 如果有之前的日志，尝试从日志中提取库存信息
+                              if (logsBeforeQuarter.length > 0) {
+                                // 查找最近的季初或季度末日志
+                                const recentLog = [...logsBeforeQuarter]
+                                  .sort((a, b) => b.timestamp - a.timestamp)[0];
+                               
+                                // 从日志描述中提取库存信息
+                                if (recentLog.description.includes('原料库存')) {
+                                  // 解析原料库存
+                                  const rawMaterialMatch = recentLog.description.match(/原料库存：([^，]+)/);
+                                  if (rawMaterialMatch) {
+                                    rawMaterials = rawMaterialMatch[1];
+                                  }
+                                   
+                                  // 解析成品库存
+                                  const finishedProductMatch = recentLog.description.match(/成品库存：([^，]+)/);
+                                  if (finishedProductMatch) {
+                                    finishedProducts = finishedProductMatch[1];
+                                  }
+                                }
                               }
-                              // 如果都没有，使用当前现金
-                              else {
-                                cash = `${state.finance.cash}M`;
-                              }
-                              
-                              // 直接使用实际的库存数据，而不是通过日志计算
-                              // 格式化产品库存，只显示数量大于0的产品
-                              finishedProducts = state.logistics.finishedProducts
-                                .filter(product => product.quantity > 0)
-                                .map(product => `${product.type}: ${product.quantity}`)
-                                .join(', ');
-                              
-                              // 格式化原料库存，只显示数量大于0的原料
-                              rawMaterials = state.logistics.rawMaterials
-                                .filter(material => material.quantity > 0)
-                                .map(material => `${material.type}: ${material.quantity}`)
-                                .join(', ');
                             }
-                            
+                             
                             // 格式化显示：现金总额，产品库存情况，原料库存情况
                             const displayText = `${cash}，${finishedProducts}，${rawMaterials}`;
-                            
+                             
                             // 清理显示文本，确保没有多余的逗号和空格
                             let cleanedText = displayText;
                             // 移除连续的逗号
@@ -724,7 +802,7 @@ const OperationCenter: React.FC = () => {
                             cleanedText = cleanedText.replace(/，$/g, '');
                             // 移除连续的空格
                             cleanedText = cleanedText.replace(/\s+/g, ' ').trim();
-                            
+                             
                             return (
                               <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
                                 <div className="text-sm font-medium text-blue-600">
@@ -742,12 +820,12 @@ const OperationCenter: React.FC = () => {
                                      log.quarter === quarter && 
                                      log.description.includes('季度结束现金变动');
                             });
-                            
+                             
                             // 如果找不到季度末日志，尝试查找该季度的任何日志
                             const anyQuarterLog = state.operation.financialLogs.find(log => {
                               return log.year === year && log.quarter === quarter;
                             });
-                            
+                             
                             if (quarterEndLog) {
                               return (
                                 <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
@@ -769,21 +847,13 @@ const OperationCenter: React.FC = () => {
                                   </div>
                                 </td>
                               );
-                            } else if (state.operation.cashFlowHistory) {
-                              // 尝试从现金流量历史记录获取
-                              const cashFlow = state.operation.cashFlowHistory.find(record => {
-                                return record.year === year && record.quarter === quarter;
-                              });
-                              
-                              if (cashFlow) {
-                                return (
-                                  <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
-                                    <div className="text-sm font-medium text-blue-600">
-                                      {cashFlow.cash}M
-                                    </div>
-                                  </td>
-                                );
-                              }
+                            } else {
+                              // 如果没有任何日志，显示横线占位符
+                              return (
+                                <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+                                  <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
+                                </td>
+                              );
                             }
                           }
                           
