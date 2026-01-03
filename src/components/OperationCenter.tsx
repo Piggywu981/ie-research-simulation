@@ -168,6 +168,9 @@ const OperationCenter: React.FC = () => {
     // 生成符合运行控制表格式的CSV
     let csvContent = '';
     
+    // 获取所有存档
+    const allSaveFiles = getSaveFiles();
+    
     // 按年份生成表格
     [1, 2, 3, 4].forEach(year => {
       // 年份标题
@@ -327,62 +330,96 @@ const OperationCenter: React.FC = () => {
               cellContent = cellContent.replace(/，$/g, '');
               cellContent = cellContent.replace(/\s+/g, ' ').trim();
             } else {
-              // 其他季度使用实际数据
-              // 查找该季度的季初日志
-              const quarterStartLog = state.operation.financialLogs.find(log => {
-                return log.year === year && 
-                       log.quarter === quarter && 
-                       log.description.includes('季初现金盘点');
-              });
-              
-              // 查找该季度的现金数据
+              // 其他季度尝试从存档中获取数据
               let cash = '-';
-              if (quarterStartLog) {
-                cash = `${quarterStartLog.newCash}M`;
-              } else {
-                // 尝试从现金流量历史记录获取
-                const cashFlow = state.operation.cashFlowHistory.find(record => {
-                  return record.year === year && record.quarter === quarter;
-                });
-                if (cashFlow) {
-                  cash = `${cashFlow.cash}M`;
-                }
-              }
+              let finishedProducts = '';
+              let rawMaterials = '';
               
-              // 直接使用实际的库存数据，而不是模拟数据
-              // 格式化产品库存，只显示数量大于0的产品
-              let displayFinishedProducts = '';
-              let displayRawMaterials = '';
+              // 计算目标季度（季初现金盘点的数据来自上一季度末）
+              const targetQuarter = quarter === 1 ? 4 : quarter - 1;
+              const targetYear = quarter === 1 ? year - 1 : year;
               
-              // 遍历所有财务日志，找到该季度之前的库存数据
-              const logsBeforeQuarter = state.operation.financialLogs.filter(log => {
-                return (log.year < year) || (log.year === year && log.quarter < quarter);
+              // 查找对应季度末的存档
+              const targetSaveFiles = allSaveFiles.filter(saveFile => {
+                // 检查存档中的年份和季度
+                const saveYear = saveFile.state.operation.currentYear;
+                const saveQuarter = saveFile.state.operation.currentQuarter;
+                
+                // 匹配目标年份和季度
+                return saveYear === targetYear && saveQuarter === targetQuarter;
               });
               
-              // 如果有之前的日志，尝试从日志中提取库存信息
-              if (logsBeforeQuarter.length > 0) {
-                // 查找最近的季初或季度末日志
-                const recentLog = [...logsBeforeQuarter]
-                  .sort((a, b) => b.timestamp - a.timestamp)[0];
+              // 如果找到匹配的存档，使用最新的一个
+              if (targetSaveFiles.length > 0) {
+                // 按时间戳排序，获取最新的存档
+                const latestSave = [...targetSaveFiles].sort((a, b) => b.timestamp - a.timestamp)[0];
                 
-                // 从日志描述中提取库存信息
-                if (recentLog.description.includes('原料库存')) {
-                  // 解析原料库存
-                  const rawMaterialMatch = recentLog.description.match(/原料库存：([^，]+)/);
-                  if (rawMaterialMatch) {
-                    displayRawMaterials = rawMaterialMatch[1];
+                // 使用存档中的数据
+                cash = `${latestSave.state.finance.cash}M`;
+                
+                // 格式化产品库存，只显示数量大于0的产品
+                finishedProducts = latestSave.state.logistics.finishedProducts
+                  .filter(product => product.quantity > 0)
+                  .map(product => `${product.type}: ${product.quantity}`)
+                  .join(', ');
+                
+                // 格式化原料库存，只显示数量大于0的原料
+                rawMaterials = latestSave.state.logistics.rawMaterials
+                  .filter(material => material.quantity > 0)
+                  .map(material => `${material.type}: ${material.quantity}`)
+                  .join(', ');
+              } else {
+                // 如果没有找到匹配的存档，回退到原来的逻辑
+                // 查找该季度的季初日志
+                const quarterStartLog = state.operation.financialLogs.find(log => {
+                  return log.year === year && 
+                         log.quarter === quarter && 
+                         log.description.includes('季初现金盘点');
+                });
+                
+                // 查找该季度的现金数据
+                if (quarterStartLog) {
+                  cash = `${quarterStartLog.newCash}M`;
+                } else {
+                  // 尝试从现金流量历史记录获取
+                  const cashFlow = state.operation.cashFlowHistory.find(record => {
+                    return record.year === year && record.quarter === quarter;
+                  });
+                  if (cashFlow) {
+                    cash = `${cashFlow.cash}M`;
                   }
+                }
+                
+                // 遍历所有财务日志，找到该季度之前的库存数据
+                const logsBeforeQuarter = state.operation.financialLogs.filter(log => {
+                  return (log.year < year) || (log.year === year && log.quarter < quarter);
+                });
+                
+                // 如果有之前的日志，尝试从日志中提取库存信息
+                if (logsBeforeQuarter.length > 0) {
+                  // 查找最近的季初或季度末日志
+                  const recentLog = [...logsBeforeQuarter]
+                    .sort((a, b) => b.timestamp - a.timestamp)[0];
                   
-                  // 解析成品库存
-                  const finishedProductMatch = recentLog.description.match(/成品库存：([^，]+)/);
-                  if (finishedProductMatch) {
-                    displayFinishedProducts = finishedProductMatch[1];
+                  // 从日志描述中提取库存信息
+                  if (recentLog.description.includes('原料库存')) {
+                    // 解析原料库存
+                    const rawMaterialMatch = recentLog.description.match(/原料库存：([^，]+)/);
+                    if (rawMaterialMatch) {
+                      rawMaterials = rawMaterialMatch[1];
+                    }
+                    
+                    // 解析成品库存
+                    const finishedProductMatch = recentLog.description.match(/成品库存：([^，]+)/);
+                    if (finishedProductMatch) {
+                      finishedProducts = finishedProductMatch[1];
+                    }
                   }
                 }
               }
               
               // 格式化显示：现金总额，产品库存情况，原料库存情况
-              cellContent = `${cash}，${displayFinishedProducts}，${displayRawMaterials}`;
+              cellContent = `${cash}，${finishedProducts}，${rawMaterials}`;
               
               // 清理显示文本，确保没有多余的逗号和空格
               cellContent = cellContent.replace(/，+/g, '，');
@@ -589,56 +626,90 @@ const OperationCenter: React.FC = () => {
                               );
                             }
                             
-                            // 其他季度使用实际数据
-                            // 直接使用季度末日志中的数据，因为季初现金盘点的数据来自上一季度末
-                            // 查找上一季度的季度末日志
-                            const prevQuarter = quarter === 1 ? 4 : quarter - 1;
-                            const prevYear = quarter === 1 ? year - 1 : year;
-                            
-                            // 查找上一季度的季度末日志
-                            const quarterEndLog = state.operation.financialLogs.find(log => {
-                              return log.year === prevYear && 
-                                     log.quarter === prevQuarter && 
-                                     log.description.includes('季度结束现金变动');
-                            });
-                            
-                            // 查找本季度的季初日志
-                            const quarterStartLog = state.operation.financialLogs.find(log => {
-                              return log.year === year && 
-                                     log.quarter === quarter && 
-                                     log.description.includes('季初现金盘点');
-                            });
-                            
+                            // 其他季度尝试从存档中获取数据
                             let cash = '-';
-                            
-                            // 优先使用本季度的季初日志
-                            if (quarterStartLog) {
-                              cash = `${quarterStartLog.newCash}M`;
-                            }
-                            // 如果没有季初日志，使用上一季度的季度末日志
-                            else if (quarterEndLog) {
-                              cash = `${quarterEndLog.newCash}M`;
-                            }
-                            // 如果都没有，使用当前现金
-                            else {
-                              cash = `${state.finance.cash}M`;
-                            }
-                            
-                            // 直接使用实际的库存数据，而不是通过日志计算
                             let finishedProducts = '';
                             let rawMaterials = '';
                             
-                            // 格式化产品库存，只显示数量大于0的产品
-                            finishedProducts = state.logistics.finishedProducts
-                              .filter(product => product.quantity > 0)
-                              .map(product => `${product.type}: ${product.quantity}`)
-                              .join(', ');
+                            // 获取所有存档
+                            const allSaveFiles = getSaveFiles();
                             
-                            // 格式化原料库存，只显示数量大于0的原料
-                            rawMaterials = state.logistics.rawMaterials
-                              .filter(material => material.quantity > 0)
-                              .map(material => `${material.type}: ${material.quantity}`)
-                              .join(', ');
+                            // 计算目标季度（季初现金盘点的数据来自上一季度末）
+                            const targetQuarter = quarter === 1 ? 4 : quarter - 1;
+                            const targetYear = quarter === 1 ? year - 1 : year;
+                            
+                            // 查找对应季度末的存档
+                            const targetSaveFiles = allSaveFiles.filter(saveFile => {
+                              // 检查存档中的年份和季度
+                              const saveYear = saveFile.state.operation.currentYear;
+                              const saveQuarter = saveFile.state.operation.currentQuarter;
+                              
+                              // 匹配目标年份和季度
+                              return saveYear === targetYear && saveQuarter === targetQuarter;
+                            });
+                            
+                            // 如果找到匹配的存档，使用最新的一个
+                            if (targetSaveFiles.length > 0) {
+                              // 按时间戳排序，获取最新的存档
+                              const latestSave = [...targetSaveFiles].sort((a, b) => b.timestamp - a.timestamp)[0];
+                              
+                              // 使用存档中的数据
+                              cash = `${latestSave.state.finance.cash}M`;
+                              
+                              // 格式化产品库存，只显示数量大于0的产品
+                              finishedProducts = latestSave.state.logistics.finishedProducts
+                                .filter(product => product.quantity > 0)
+                                .map(product => `${product.type}: ${product.quantity}`)
+                                .join(', ');
+                              
+                              // 格式化原料库存，只显示数量大于0的原料
+                              rawMaterials = latestSave.state.logistics.rawMaterials
+                                .filter(material => material.quantity > 0)
+                                .map(material => `${material.type}: ${material.quantity}`)
+                                .join(', ');
+                            } else {
+                              // 如果没有找到匹配的存档，回退到原来的逻辑
+                              // 直接使用季度末日志中的数据，因为季初现金盘点的数据来自上一季度末
+                              // 查找上一季度的季度末日志
+                              const quarterEndLog = state.operation.financialLogs.find(log => {
+                                return log.year === targetYear && 
+                                       log.quarter === targetQuarter && 
+                                       log.description.includes('季度结束现金变动');
+                              });
+                              
+                              // 查找本季度的季初日志
+                              const quarterStartLog = state.operation.financialLogs.find(log => {
+                                return log.year === year && 
+                                       log.quarter === quarter && 
+                                       log.description.includes('季初现金盘点');
+                              });
+                              
+                              // 优先使用本季度的季初日志
+                              if (quarterStartLog) {
+                                cash = `${quarterStartLog.newCash}M`;
+                              }
+                              // 如果没有季初日志，使用上一季度的季度末日志
+                              else if (quarterEndLog) {
+                                cash = `${quarterEndLog.newCash}M`;
+                              }
+                              // 如果都没有，使用当前现金
+                              else {
+                                cash = `${state.finance.cash}M`;
+                              }
+                              
+                              // 直接使用实际的库存数据，而不是通过日志计算
+                              // 格式化产品库存，只显示数量大于0的产品
+                              finishedProducts = state.logistics.finishedProducts
+                                .filter(product => product.quantity > 0)
+                                .map(product => `${product.type}: ${product.quantity}`)
+                                .join(', ');
+                              
+                              // 格式化原料库存，只显示数量大于0的原料
+                              rawMaterials = state.logistics.rawMaterials
+                                .filter(material => material.quantity > 0)
+                                .map(material => `${material.type}: ${material.quantity}`)
+                                .join(', ');
+                            }
                             
                             // 格式化显示：现金总额，产品库存情况，原料库存情况
                             const displayText = `${cash}，${finishedProducts}，${rawMaterials}`;
