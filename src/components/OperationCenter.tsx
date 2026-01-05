@@ -79,23 +79,21 @@ const getProductionLineData = (
   });
 
   if (targetSaveFiles.length === 0) {
-    throw new Error(`未找到第${year}年第${quarter}季度的存档数据`);
+    return [];
   }
 
   // 按时间戳排序，获取该季度的所有存档
   const sortedSaves = [...targetSaveFiles].sort((a, b) => a.timestamp - b.timestamp);
   
-  // 检查该季度是否有生产线处于running状态
-  for (const save of sortedSaves) {
-    const runningLines = save.state.production.factories.flatMap((factory: any) =>
-      factory.productionLines.filter((line: any) => line.status === 'running')
-    );
-    if (runningLines.length > 0) {
-      return runningLines;
-    }
-  }
+  // 获取最新的存档
+  const latestSave = sortedSaves[sortedSaves.length - 1];
   
-  throw new Error(`第${year}年第${quarter}季度没有处于running状态的生产线`);
+  // 检查该季度是否有生产线处于running状态
+  const runningLines = latestSave.state.production.factories.flatMap((factory: any) =>
+    factory.productionLines.filter((line: any) => line.status === 'running')
+  );
+  
+  return runningLines;
 };
 
 // 工具函数：计算生产费用
@@ -630,13 +628,18 @@ const generateCSVContent = (
             // 获取生产线数据
             const productionLineData = getProductionLineData(allSaveFiles, year, quarter);
             
-            // 计算生产费用
-            const productionCosts = calculateProductionCosts(productionLineData);
-            // 合并同类项
-            const groupedCosts = groupProductionCosts(productionCosts);
-            // 格式化显示
-            const formattedProduction = groupedCosts.map(formatProductionCost);
-            cellContent = formattedProduction.join('/');
+            // 如果没有运行中的生产线，显示横线
+            if (productionLineData.length === 0) {
+              cellContent = '-';
+            } else {
+              // 计算生产费用
+              const productionCosts = calculateProductionCosts(productionLineData);
+              // 合并同类项
+              const groupedCosts = groupProductionCosts(productionCosts);
+              // 格式化显示
+              const formattedProduction = groupedCosts.map(formatProductionCost);
+              cellContent = formattedProduction.join('/');
+            }
           } catch (error) {
             // 没有生产记录或数据异常，显示横线
             cellContent = '-';
@@ -914,6 +917,15 @@ const QuarterCell: React.FC<{
     try {
       // 获取生产线数据
       const productionLineData = getProductionLineData(allSaveFiles, year, quarter);
+
+      // 如果没有运行中的生产线，显示横线
+      if (productionLineData.length === 0) {
+        return (
+          <td key={quarter} className="border border-gray-300 px-4 py-2 text-center">
+            <div className="w-6 h-0 border-t border-gray-400 mx-auto"></div>
+          </td>
+        );
+      }
 
       // 计算生产费用
       const productionCosts = calculateProductionCosts(productionLineData);
