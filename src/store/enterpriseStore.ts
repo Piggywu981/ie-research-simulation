@@ -1692,6 +1692,7 @@ export const useEnterpriseStore = create<{
       // 7. 处理生产线状态变化（安装、转产、生产）
       const newFactories = [...state.state.production.factories];
       const newFinishedProducts = [...state.state.logistics.finishedProducts];
+      const newOperationLogs = [...state.state.operation.operationLogs];
       
       let totalProduced = 0;
       // 用于记录因原材料不足而停产的生产线
@@ -1976,8 +1977,6 @@ export const useEnterpriseStore = create<{
       };
       
       // 9. 生成原材料耗尽导致停产的事件记录
-      const newOperationLogs = [...state.state.operation.operationLogs];
-      
       // 如果有生产线因原材料耗尽而停产，生成事件记录
       if (stoppedLines.length > 0) {
         stoppedLines.forEach(stoppedLine => {
