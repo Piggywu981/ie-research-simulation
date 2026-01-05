@@ -2021,11 +2021,8 @@ export const useEnterpriseStore = create<{
       // 10. 支付行政管理费（第四季度开始时扣除1M）
       const adminCost = newQuarter === 4 ? 1 : 0;
       
-      // 11. 计提折旧（简化处理，假设每季度2M）
-      const depreciationCost = 2;
-      
       // 总现金支出
-      const totalCashOut = maintenanceCost + totalInterest + adminCost + depreciationCost + rdInvestment;
+      const totalCashOut = maintenanceCost + totalInterest + adminCost + rdInvestment;
       
       // 计算新的现金余额
       const newCash = state.state.finance.cash + cashIncrease - totalCashOut;
@@ -2098,7 +2095,7 @@ export const useEnterpriseStore = create<{
           year: newYear,
           quarter: newQuarter,
           timestamp: Date.now(),
-          description: `第${state.state.operation.currentYear}年结束，年度结账，计提折旧：${depreciationCost}M，年度所得税：${taxAmount}M`,
+          description: `第${state.state.operation.currentYear}年结束，年度结账，年度所得税：${taxAmount}M`,
           cashChange: -taxAmount,
           newCash: finalCash,
           operator: '系统自动',
