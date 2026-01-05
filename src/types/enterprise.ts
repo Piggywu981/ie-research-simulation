@@ -38,7 +38,7 @@ export interface ProductionLine {
   id: string;
   name: string;
   type: 'automatic' | 'semi-automatic' | 'manual' | 'flexible';
-  status: 'running' | 'installing' | 'converting' | 'maintaining' | 'idle' | 'selling';
+  status: 'running' | 'installing' | 'converting' | 'maintaining' | 'idle' | 'selling' | 'stopped'; // stopped表示因原材料不足等原因停产
   product: 'P1' | 'P2' | 'P3' | 'P4' | null;
   purchasePrice: number;
   installationPeriod: number;

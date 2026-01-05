@@ -218,21 +218,41 @@ const OperationCenter: React.FC = () => {
           
           // 特殊处理：开始下一批生产
           if (step.description.includes('开始下一批生产')) {
-            // 查找该季度的生产相关日志
-            const productionLogs = state.operation.operationLogs.filter(log => {
-              return log.action.includes('开始生产') && 
-                     (log.dataChange || '').includes(`第${year}年第${quarter}季度`);
+            // 获取所有存档
+            const allSaveFiles = getSaveFiles();
+            
+            // 查找对应季度的存档（生产数据来自当前季度）
+            const targetSaveFiles = allSaveFiles.filter(saveFile => {
+              // 检查存档中的年份和季度
+              const saveYear = saveFile.state.operation.currentYear;
+              const saveQuarter = saveFile.state.operation.currentQuarter;
+              
+              // 匹配目标年份和季度
+              return saveYear === year && saveQuarter === quarter;
             });
             
-            // 获取所有运行中的生产线，计算生产费用
-            const runningLines = state.production.factories.flatMap(factory => 
-              factory.productionLines.filter(line => line.status === 'running')
-            );
+            let productionLineData = [];
+            
+            // 如果找到匹配的存档，使用存档中的数据
+            if (targetSaveFiles.length > 0) {
+              // 按时间戳排序，获取最新的存档
+              const latestSave = [...targetSaveFiles].sort((a, b) => b.timestamp - a.timestamp)[0];
+              
+              // 使用存档中的生产线数据
+              productionLineData = latestSave.state.production.factories.flatMap(factory => 
+                factory.productionLines.filter(line => line.status === 'running')
+              );
+            } else {
+              // 否则使用当前状态的数据
+              productionLineData = state.production.factories.flatMap(factory => 
+                factory.productionLines.filter(line => line.status === 'running')
+              );
+            }
             
             // 如果有运行中的生产线，计算生产费用
-            if (runningLines.length > 0) {
+            if (productionLineData.length > 0) {
               // 计算每条生产线的生产费用（只计算加工费）
-              const productionCosts = runningLines.map(line => {
+              const productionCosts = productionLineData.map(line => {
                 // 只计算加工费，因为原料已经订购过了
                 // 加工费用：根据生产线类型不同
                 const processingCost = line.type === 'automatic' ? 1 : 
@@ -279,7 +299,25 @@ const OperationCenter: React.FC = () => {
               
               cellContent = formattedProduction.join('/');
             } else {
-              cellContent = '-';
+              // 检查是否有stopped状态的生产线，可能是因为原材料不足而停产
+              let stoppedLines = [];
+              if (targetSaveFiles.length > 0) {
+                const latestSave = [...targetSaveFiles].sort((a, b) => b.timestamp - a.timestamp)[0];
+                stoppedLines = latestSave.state.production.factories.flatMap(factory => 
+                  factory.productionLines.filter(line => line.status === 'stopped')
+                );
+              } else {
+                stoppedLines = state.production.factories.flatMap(factory => 
+                  factory.productionLines.filter(line => line.status === 'stopped')
+                );
+              }
+              
+              // 如果有停产的生产线，显示原因
+              if (stoppedLines.length > 0) {
+                cellContent = '-'; // 停产状态下显示 '-'，表示没有生产
+              } else {
+                cellContent = '-'; // 没有运行或停产的生产线，显示 '-' 
+              }
             }
           }
           // 特殊处理：其他现金收支情况登记 - 只保留广告投放
@@ -1001,21 +1039,41 @@ const OperationCenter: React.FC = () => {
                           
                           // 特殊处理：开始下一批生产
                           else if (step.description.includes('开始下一批生产')) {
-                            // 查找该季度的生产相关日志
-                            const productionLogs = state.operation.operationLogs.filter(log => {
-                              return log.action.includes('开始生产') && 
-                                     (log.dataChange || '').includes(`第${year}年第${quarter}季度`);
+                            // 获取所有存档
+                            const allSaveFiles = getSaveFiles();
+                            
+                            // 查找对应季度的存档（生产数据来自当前季度）
+                            const targetSaveFiles = allSaveFiles.filter(saveFile => {
+                              // 检查存档中的年份和季度
+                              const saveYear = saveFile.state.operation.currentYear;
+                              const saveQuarter = saveFile.state.operation.currentQuarter;
+                              
+                              // 匹配目标年份和季度
+                              return saveYear === year && saveQuarter === quarter;
                             });
                             
-                            // 获取所有运行中的生产线，计算生产费用
-                            const runningLines = state.production.factories.flatMap(factory => 
-                              factory.productionLines.filter(line => line.status === 'running')
-                            );
+                            let productionLineData = [];
+                            
+                            // 如果找到匹配的存档，使用存档中的数据
+                            if (targetSaveFiles.length > 0) {
+                              // 按时间戳排序，获取最新的存档
+                              const latestSave = [...targetSaveFiles].sort((a, b) => b.timestamp - a.timestamp)[0];
+                              
+                              // 使用存档中的生产线数据
+                              productionLineData = latestSave.state.production.factories.flatMap(factory => 
+                                factory.productionLines.filter(line => line.status === 'running')
+                              );
+                            } else {
+                              // 否则使用当前状态的数据
+                              productionLineData = state.production.factories.flatMap(factory => 
+                                factory.productionLines.filter(line => line.status === 'running')
+                              );
+                            }
                             
                             // 如果有运行中的生产线，计算生产费用
-                            if (runningLines.length > 0) {
+                            if (productionLineData.length > 0) {
                               // 计算每条生产线的生产费用（只计算加工费）
-                              const productionCosts = runningLines.map(line => {
+                              const productionCosts = productionLineData.map(line => {
                                 // 只计算加工费，因为原料已经订购过了
                                 // 加工费用：根据生产线类型不同
                                 const processingCost = line.type === 'automatic' ? 1 : 

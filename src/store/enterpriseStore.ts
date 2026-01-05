@@ -1694,6 +1694,9 @@ export const useEnterpriseStore = create<{
       const newFinishedProducts = [...state.state.logistics.finishedProducts];
       
       let totalProduced = 0;
+      // 用于记录因原材料不足而停产的生产线
+      const stoppedLines: {lineName: string, product: string, requiredMaterials: string[]}[] = [];
+      
       newFactories.forEach((factory, factoryIndex) => {
         factory.productionLines.forEach((line, lineIndex) => {
           // 处理安装中的生产线
@@ -1853,6 +1856,58 @@ export const useEnterpriseStore = create<{
         });
       });
       
+      // 8. 检查原材料是否耗尽，自动将生产线状态从"运行"更新为"停产"
+      // 遍历所有生产线，检查其生产所需的原材料是否耗尽
+      newFactories.forEach((factory, factoryIndex) => {
+        factory.productionLines.forEach((line, lineIndex) => {
+          // 只处理运行中的生产线
+          if (line.status === 'running' && line.product) {
+            // 计算该产品需要的原材料
+            const requiredMaterials: Record<string, number> = {};
+            if (line.product === 'P1') {
+              requiredMaterials['R1'] = 1;
+            } else if (line.product === 'P2') {
+              requiredMaterials['R1'] = 1;
+              requiredMaterials['R2'] = 1;
+            } else if (line.product === 'P3') {
+              requiredMaterials['R2'] = 2;
+              requiredMaterials['R3'] = 1;
+            } else if (line.product === 'P4') {
+              requiredMaterials['R2'] = 1;
+              requiredMaterials['R3'] = 1;
+              requiredMaterials['R4'] = 2;
+            }
+            
+            // 检查所有需要的原材料是否都已经耗尽（数量为0）
+            let allMaterialsExhausted = true;
+            for (const [materialType, _] of Object.entries(requiredMaterials)) {
+              const material = newRawMaterials.find(m => m.type === materialType);
+              if (material && material.quantity > 0) {
+                allMaterialsExhausted = false;
+                break;
+              }
+            }
+            
+            // 如果所有所需原材料都已耗尽，将生产线状态改为"stopped"（停产）
+            if (allMaterialsExhausted) {
+              // 更新生产线状态
+              newFactories[factoryIndex].productionLines[lineIndex] = {
+                ...line,
+                status: 'stopped',
+                inProgressProducts: 0, // 清空在制品
+              };
+              
+              // 记录停产的生产线信息
+              stoppedLines.push({
+                lineName: line.name,
+                product: line.product,
+                requiredMaterials: Object.keys(requiredMaterials)
+              });
+            }
+          }
+        });
+      });
+      
       // 更新生产/完工入库日志
       const productionLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-production`,
@@ -1864,6 +1919,23 @@ export const useEnterpriseStore = create<{
         newCash: initialCash + cashIncrease - rdInvestment,
         operator: '系统自动',
       };
+      
+      // 9. 生成原材料耗尽导致停产的事件记录
+      const newOperationLogs = [...state.state.operation.operationLogs];
+      
+      // 如果有生产线因原材料耗尽而停产，生成事件记录
+      if (stoppedLines.length > 0) {
+        stoppedLines.forEach(stoppedLine => {
+          const stopLog = {
+            id: `log-${Date.now()}-stop-${Math.random().toString(36).substr(2, 9)}`,
+            time: new Date().toLocaleString(),
+            operator: '系统自动',
+            action: '生产线停产',
+            dataChange: `生产线${stoppedLine.lineName}因生产${stoppedLine.product}所需原材料(${stoppedLine.requiredMaterials.join('、')})耗尽，自动停产`,
+          };
+          newOperationLogs.unshift(stopLog);
+        });
+      }
       
       // 8. 计算季度维护成本（如果是新的一年的第1季度）
       let maintenanceCost = 0;
@@ -2029,6 +2101,7 @@ export const useEnterpriseStore = create<{
           isGameOver: newYear > 4,
           cashFlowHistory: newCashFlowHistory,
           financialLogs: [...allLogs, ...state.state.operation.financialLogs],
+          operationLogs: newOperationLogs,
         },
         finance: {
           ...state.state.finance,
