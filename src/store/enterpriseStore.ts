@@ -1697,6 +1697,61 @@ export const useEnterpriseStore = create<{
       // 用于记录因原材料不足而停产的生产线
       const stoppedLines: {lineName: string, product: string, requiredMaterials: string[]}[] = [];
       
+      // 8. 原材料到货后，恢复停产的生产线
+      // 遍历所有生产线，检查stopped状态的生产线是否可以恢复生产
+      newFactories.forEach((factory, factoryIndex) => {
+        factory.productionLines.forEach((line, lineIndex) => {
+          // 只处理停产状态的生产线
+          if (line.status === 'stopped' && line.product) {
+            // 计算该产品需要的原材料
+            const requiredMaterials: Record<string, number> = {};
+            if (line.product === 'P1') {
+              requiredMaterials['R1'] = 1;
+            } else if (line.product === 'P2') {
+              requiredMaterials['R1'] = 1;
+              requiredMaterials['R2'] = 1;
+            } else if (line.product === 'P3') {
+              requiredMaterials['R2'] = 2;
+              requiredMaterials['R3'] = 1;
+            } else if (line.product === 'P4') {
+              requiredMaterials['R2'] = 1;
+              requiredMaterials['R3'] = 1;
+              requiredMaterials['R4'] = 2;
+            }
+            
+            // 检查所有需要的原材料是否都已充足
+            let allMaterialsSufficient = true;
+            for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
+              const material = newRawMaterials.find(m => m.type === materialType);
+              if (!material || material.quantity < requiredQuantity) {
+                allMaterialsSufficient = false;
+                break;
+              }
+            }
+            
+            // 如果所有所需原材料都已充足，将生产线状态改为running
+            if (allMaterialsSufficient) {
+              // 更新生产线状态
+              newFactories[factoryIndex].productionLines[lineIndex] = {
+                ...line,
+                status: 'running',
+                inProgressProducts: line.type === 'automatic' ? 1 : line.type === 'flexible' ? 1 : line.type === 'semi-automatic' ? 1 : 1,
+              };
+              
+              // 记录恢复生产日志
+              const resumeLog = {
+                id: `log-${Date.now()}-resume-${Math.random().toString(36).substr(2, 9)}`,
+                time: new Date().toLocaleString(),
+                operator: '系统自动',
+                action: '生产线恢复生产',
+                dataChange: `生产线${line.name}因生产${line.product}所需原材料已充足，自动恢复生产`,
+              };
+              newOperationLogs.unshift(resumeLog);
+            }
+          }
+        });
+      });
+      
       newFactories.forEach((factory, factoryIndex) => {
         factory.productionLines.forEach((line, lineIndex) => {
           // 处理安装中的生产线

@@ -65,6 +65,10 @@ const ProductionCenter: React.FC = () => {
         return 'bg-gray-500 text-white';
       case 'selling':
         return 'bg-red-500 text-white';
+      case 'installing':
+        return 'bg-purple-500 text-white';
+      case 'stopped':
+        return 'bg-orange-500 text-white';
       default:
         return 'bg-gray-300 text-gray-700';
     }
@@ -83,6 +87,10 @@ const ProductionCenter: React.FC = () => {
         return '闲置';
       case 'selling':
         return '出售中';
+      case 'installing':
+        return '安装中';
+      case 'stopped':
+        return '停产';
       default:
         return '未知状态';
     }
