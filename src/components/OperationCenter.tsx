@@ -73,17 +73,29 @@ const getProductionLineData = (
   quarter: number,
   currentState: any
 ) => {
-  const latestSave = getLatestSaveFile(allSaveFiles, year, quarter);
+  // 查找指定年份和季度的存档
+  const targetSaveFiles = allSaveFiles.filter(save => {
+    return save.state.operation.currentYear === year && 
+           save.state.operation.currentQuarter === quarter;
+  });
 
-  if (latestSave) {
-    return latestSave.state.production.factories.flatMap((factory: any) =>
+  // 按时间戳排序，获取该季度的所有存档
+  const sortedSaves = [...targetSaveFiles].sort((a, b) => a.timestamp - b.timestamp);
+  
+  // 检查该季度是否有生产线处于running状态
+  for (const save of sortedSaves) {
+    const runningLines = save.state.production.factories.flatMap((factory: any) =>
       factory.productionLines.filter((line: any) => line.status === 'running')
     );
-  } else {
-    return currentState.production.factories.flatMap((factory: any) =>
-      factory.productionLines.filter((line: any) => line.status === 'running')
-    );
+    if (runningLines.length > 0) {
+      return runningLines;
+    }
   }
+  
+  // 如果没有找到，使用当前状态的生产线数据
+  return currentState.production.factories.flatMap((factory: any) =>
+    factory.productionLines.filter((line: any) => line.status === 'running')
+  );
 };
 
 // 工具函数：计算生产费用
