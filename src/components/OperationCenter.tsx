@@ -170,12 +170,8 @@ const getQuarterStartInventory = (
     };
   }
 
-  // 计算目标季度（季初现金盘点的数据来自上一季度末）
-  const targetQuarter = quarter === 1 ? 4 : quarter - 1;
-  const targetYear = quarter === 1 ? year - 1 : year;
-
-  // 查找对应季度末的存档
-  const latestSave = getLatestSaveFile(allSaveFiles, targetYear, targetQuarter);
+  // 查找对应季度的存档（使用当前季度数据）
+  const latestSave = getLatestSaveFile(allSaveFiles, year, quarter);
 
   if (latestSave) {
     // 从存档中获取数据

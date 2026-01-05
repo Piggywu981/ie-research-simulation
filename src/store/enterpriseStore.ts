@@ -1580,23 +1580,8 @@ export const useEnterpriseStore = create<{
       const newQuarter = state.state.operation.currentQuarter === 4 ? 1 : state.state.operation.currentQuarter + 1;
       const newYear = state.state.operation.currentQuarter === 4 ? state.state.operation.currentYear + 1 : state.state.operation.currentYear;
       
-      // 季度初日志记录 - 季初现金盘点
+      // 季度初日志记录 - 季初现金盘点的初始数据
       const initialCash = state.state.finance.cash;
-      // 获取当前产品库存情况
-      const currentFinishedProducts = state.state.logistics.finishedProducts.map(p => `${p.type}: ${p.quantity}`).join(', ');
-      // 获取当前原料库存情况
-      const currentRawMaterials = state.state.logistics.rawMaterials.map(m => `${m.type}: ${m.quantity}`).join(', ');
-      
-      const quarterStartLog: FinancialLogRecord = {
-        id: `finlog-${Date.now()}-start`,
-        year: newYear,
-        quarter: newQuarter,
-        timestamp: Date.now(),
-        description: `第${newYear}年第${newQuarter}季度初现金盘点，现金余额：${initialCash}M，成品库存：${currentFinishedProducts}，原料库存：${currentRawMaterials}`,
-        cashChange: 0,
-        newCash: initialCash,
-        operator: '系统自动',
-      };
       
       // 1. 处理季初现金盘点
       // 2. 更新还贷/还本付息（这里简化处理，实际应根据贷款期限处理）
@@ -1663,7 +1648,7 @@ export const useEnterpriseStore = create<{
       // 6. 处理原材料订单到货
       let newRawMaterials = [...state.state.logistics.rawMaterials];
       const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => {
-        if (order.arrivalPeriod === state.state.operation.currentQuarter) {
+        if (order.arrivalPeriod === newQuarter) {
           // 订单到货，更新原材料库存
           const materialIndex = newRawMaterials.findIndex(m => m.type === order.materialType);
           if (materialIndex !== -1) {
@@ -1686,6 +1671,24 @@ export const useEnterpriseStore = create<{
         description: `原材料入库/更新原料订单，当前原材料库存：${newRawMaterials.map(m => `${m.type}: ${m.quantity}`).join(', ')}`,
         cashChange: 0,
         newCash: initialCash + cashIncrease - rdInvestment,
+        operator: '系统自动',
+      };
+      
+      // 生成季初现金盘点日志（在原材料入库后生成，使用更新后的状态）
+      const quarterStartCash = initialCash + cashIncrease - rdInvestment;
+      // 获取当前产品库存情况
+      const currentFinishedProducts = state.state.logistics.finishedProducts.map(p => `${p.type}: ${p.quantity}`).join(', ');
+      // 获取当前原料库存情况（使用更新后的原材料库存）
+      const currentRawMaterials = newRawMaterials.map(m => `${m.type}: ${m.quantity}`).join(', ');
+      
+      const quarterStartLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-start`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: `第${newYear}年第${newQuarter}季度初现金盘点，现金余额：${quarterStartCash}M，成品库存：${currentFinishedProducts}，原料库存：${currentRawMaterials}`,
+        cashChange: 0,
+        newCash: quarterStartCash,
         operator: '系统自动',
       };
       
