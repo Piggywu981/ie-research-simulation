@@ -7,15 +7,18 @@ import LogisticsCenter from '../components/LogisticsCenter';
 import MarketingCenter from '../components/MarketingCenter';
 import OperationCenter from '../components/OperationCenter';
 import SaveLoadPanel from '../components/SaveLoadPanel';
+import RulesModal from '../components/RulesModal';
+import DiscountPanel from '../components/DiscountPanel';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 // 定义中心类型
 type CenterType = 'finance' | 'production' | 'logistics' | 'marketing' | 'operation';
 
 export default function Home() {
-  const { state, applyLongTermLoan, applyShortTermLoan } = useEnterpriseStore();
+  const { state, applyLongTermLoan, applyShortTermLoan, payTaxes, togglePaused, validationError, setValidationError } = useEnterpriseStore();
   const { finance, operation } = state;
   const [activeCenter, setActiveCenter] = useState<CenterType>('finance');
+  const [rulesOpen, setRulesOpen] = useState(false);
 
   // 计算权益（股东资本 + 利润留存）
   const totalEquity = finance.equity + finance.retainedProfit;
@@ -37,15 +40,53 @@ export default function Home() {
               <span className="text-sm font-medium text-green-800">现金余额：</span>
               <span className="text-sm font-bold text-green-800">{finance.cash}M</span>
             </div>
-            <div className="flex items-center space-x-2 bg-yellow-50 px-3 py-1 rounded-full">
-              <span className="text-sm font-medium text-yellow-800">核心任务：</span>
-              <span className="text-sm font-bold text-yellow-800">待支付应付税</span>
-            </div>
+            {finance.taxesPayable > 0 && (
+              <button
+                onClick={payTaxes}
+                disabled={operation.currentQuarter !== 1}
+                className="flex items-center space-x-2 bg-yellow-50 px-3 py-1 rounded-full hover:bg-yellow-100 disabled:opacity-60"
+                title={operation.currentQuarter !== 1 ? '应付税金在年初（第1季度）交纳' : '点击支付应付税'}
+              >
+                <span className="text-sm font-medium text-yellow-800">待支付应付税：</span>
+                <span className="text-sm font-bold text-yellow-800">{finance.taxesPayable}M</span>
+              </button>
+            )}
+            <button
+              onClick={() => setRulesOpen(true)}
+              className="bg-purple-50 text-purple-700 text-sm font-medium px-3 py-1 rounded-full hover:bg-purple-100"
+            >
+              规则说明
+            </button>
+            <button
+              onClick={togglePaused}
+              className={`${state.isPaused ? 'bg-green-500 hover:bg-green-600' : 'bg-orange-500 hover:bg-orange-600'} text-white text-sm font-medium px-3 py-1 rounded-full`}
+            >
+              {state.isPaused ? '继续运营' : '暂停运营'}
+            </button>
             {/* 存档管理面板 */}
             <SaveLoadPanel />
           </div>
         </div>
       </header>
+
+      {/* 暂停横幅 */}
+      {state.isPaused && (
+        <div className="bg-orange-500 text-white text-center py-2 font-medium">
+          运营已暂停（教学讲解模式）—— 所有操作暂时不可用，点击右上角"继续运营"恢复
+        </div>
+      )}
+
+      {/* 校验错误提示 */}
+      {validationError && (
+        <div className="container mx-auto px-4 pt-4">
+          <div className="bg-red-50 border border-red-300 text-red-700 px-4 py-3 rounded-lg flex justify-between items-center">
+            <span className="text-sm">{validationError}</span>
+            <button onClick={() => setValidationError(null)} className="text-red-500 hover:text-red-700 ml-4">✕</button>
+          </div>
+        </div>
+      )}
+
+      <RulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
 
       {/* 主要内容区域 */}
       <main className="container mx-auto px-4 py-6">
@@ -321,6 +362,9 @@ export default function Home() {
 
             {/* 右侧信息 */}
             <div className="space-y-4">
+              {/* 资金贴现 */}
+              <DiscountPanel />
+
               {/* 短期贷款 */}
               <div className="dashboard-card">
                 <h2 className="dashboard-title">短期贷款</h2>

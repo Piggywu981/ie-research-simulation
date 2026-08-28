@@ -285,18 +285,12 @@ export const useEnterpriseStore = create<{
   validationError: string | null;
   setValidationError: (message: string | null) => void;
   // 财务操作
-  updateCash: (amount: number, description?: string) => void;
-  updateLongTermLoan: (amount: number, term: number) => void;
-  updateShortTermLoan: (amount: number, term: number) => void;
-  updateAccountsReceivable: (period: 0 | 1 | 2 | 3, amount: number) => void;
-  updateTaxesPayable: (amount: number) => void;
   applyLongTermLoan: () => void;
   applyShortTermLoan: () => void;
   discountReceivable: (amount: number) => void;
   payTaxes: () => void;
   // 生产操作
   investProductR_D: (product: 'P2', amount?: number) => void;
-  updateProductionLineStatus: (lineId: string, status: EnterpriseState['production']['factories'][0]['productionLines'][0]['status']) => void;
   addProductionLine: (factoryId: string, lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible', product: 'P1' | 'P2') => void;
   removeProductionLine: (factoryId: string, lineId: string) => void;
   cancelProduction: (lineId: string) => void;
@@ -306,11 +300,10 @@ export const useEnterpriseStore = create<{
   // 物流操作
   placeRawMaterialOrder: (materialType: 'R1' | 'R2' | 'R3' | 'R4', quantity: number) => void;
   cancelRawMaterialOrder: (orderId: string) => void;
-  updateRawMaterialInventory: (materialType: 'R1' | 'R2' | 'R3' | 'R4', quantity: number) => void;
-  updateFinishedProductInventory: (productType: 'P1' | 'P2' | 'P3' | 'P4', quantity: number) => void;
   // 营销操作
   placeAdvertisement: (amount: number) => void;
   enterOrderMeeting: () => void;
+  togglePaused: () => void;
   selectOrder: (orderId: string) => void;
   deliverOrder: (orderId: string) => void;
   addAvailableOrder: (order: Omit<Order, 'id' | 'isSelected' | 'isDelivered'>) => void;
@@ -334,6 +327,12 @@ export const useEnterpriseStore = create<{
   validationError: null,
 
   setValidationError: (message) => set({ validationError: message }),
+
+  // 暂停/继续运营（教学讲解模式）：暂停期间所有变更类操作被拒绝
+  togglePaused: () =>
+    set((state) => ({
+      state: { ...state.state, isPaused: !state.state.isPaused },
+    })),
 
   // 加载本地存储的存档
   getSaveFiles: () => {
@@ -434,34 +433,6 @@ export const useEnterpriseStore = create<{
   },
 
   // 财务操作
-  updateCash: (amount, description = '现金变动') =>
-    set((state) => {
-      const newCash = state.state.finance.cash + amount;
-      const financialLog: FinancialLogRecord = {
-        id: `finlog-${Date.now()}`,
-        year: state.state.operation.currentYear,
-        quarter: state.state.operation.currentQuarter,
-        timestamp: Date.now(),
-        description,
-        cashChange: amount,
-        newCash,
-        operator: '企业1管理者',
-      };
-      
-      return {
-        state: {
-          ...state.state,
-          finance: {
-            ...state.state.finance,
-            cash: newCash,
-          },
-          operation: {
-            ...state.state.operation,
-            financialLogs: [financialLog, ...state.state.operation.financialLogs],
-          },
-        },
-      };
-    }),
   
   // 添加财务日志
   addFinancialLog: (description: string, cashChange: number, newCash: number) =>
@@ -489,65 +460,16 @@ export const useEnterpriseStore = create<{
     }),
 
 
-  updateLongTermLoan: (amount, term) =>
-    set((state) => ({
-      state: {
-        ...state.state,
-        finance: {
-          ...state.state.finance,
-          longTermLoan: {
-            ...state.state.finance.longTermLoan,
-            amount: state.state.finance.longTermLoan.amount + amount,
-            term,
-          },
-        },
-      },
-    })),
 
-  updateShortTermLoan: (amount, term) =>
-    set((state) => ({
-      state: {
-        ...state.state,
-        finance: {
-          ...state.state.finance,
-          shortTermLoan: {
-            ...state.state.finance.shortTermLoan,
-            amount: state.state.finance.shortTermLoan.amount + amount,
-            term,
-          },
-        },
-      },
-    })),
 
-  updateAccountsReceivable: (period, amount) =>
-    set((state) => {
-      const newAR = [...state.state.finance.accountsReceivable] as [number, number, number, number];
-      newAR[period] += amount;
-      return {
-        state: {
-          ...state.state,
-          finance: {
-            ...state.state.finance,
-            accountsReceivable: newAR,
-          },
-        },
-      };
-    }),
 
-  updateTaxesPayable: (amount) =>
-    set((state) => ({
-      state: {
-        ...state.state,
-        finance: {
-          ...state.state.finance,
-          taxesPayable: state.state.finance.taxesPayable + amount,
-        },
-      },
-    })),
   
   // 申请长期贷款（年末第4季度，每次20M，未还本余额上限40M，3年期年息10%）
   applyLongTermLoan: () =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { finance, operation } = state.state;
       if (operation.currentQuarter !== 4) {
         return { validationError: '长期贷款只能在年末（第4季度）申请' };
@@ -605,6 +527,9 @@ export const useEnterpriseStore = create<{
   // 申请短期贷款（每季度初第1/3季度，每次20M，未还本余额上限40M，1年期年息5%）
   applyShortTermLoan: () =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { finance, operation } = state.state;
       if (![1, 3].includes(operation.currentQuarter)) {
         return { validationError: '短期贷款只在第1季度初（1月）和第3季度初（6月）放贷' };
@@ -662,6 +587,9 @@ export const useEnterpriseStore = create<{
   // 资金贴现：应收账款随时可贴现，金额为7的倍数，每7M付1M贴息（到账6M）
   discountReceivable: (amount) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { finance, operation } = state.state;
       const totalReceivable = finance.accountsReceivable.reduce((s, v) => s + v, 0);
       if (!isValidDiscount(amount, totalReceivable)) {
@@ -711,6 +639,9 @@ export const useEnterpriseStore = create<{
   // 支付应付税（年初第1季度，交纳上年度所得税）
   payTaxes: () =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { finance, operation } = state.state;
       if (operation.currentQuarter !== 1) {
         return { validationError: '应付税金在年初（第1季度）交纳' };
@@ -758,6 +689,9 @@ export const useEnterpriseStore = create<{
   // 启动 P2 产品研发（6Q 分期：启动付首期1M，此后每季度自动续投1M，现金不足自动中断）
   investProductR_D: (product, amount) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       if (product !== 'P2') {
         return { validationError: '本期运营仅开放 P2 产品研发' };
       }
@@ -832,24 +766,6 @@ export const useEnterpriseStore = create<{
       };
     }),
 
-  updateProductionLineStatus: (lineId, status) =>
-    set((state) => {
-      const newFactories = state.state.production.factories.map((factory) => {
-        const newProductionLines = factory.productionLines.map((line) =>
-          line.id === lineId ? { ...line, status } : line
-        );
-        return { ...factory, productionLines: newProductionLines };
-      });
-      return {
-        state: {
-          ...state.state,
-          production: {
-            ...state.state.production,
-            factories: newFactories,
-          },
-        },
-      };
-    }),
 
   // 获取生产线剩余数量
   getProductionLineRemaining: (lineType) => {
@@ -866,6 +782,9 @@ export const useEnterpriseStore = create<{
   // 添加生产线
   addProductionLine: (factoryId, lineType, product) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       // 找到指定厂房
       const factoryIndex = state.state.production.factories.findIndex(f => f.id === factoryId);
       if (factoryIndex === -1) {
@@ -1020,6 +939,9 @@ export const useEnterpriseStore = create<{
   // 取消生产
   cancelProduction: (lineId) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       // 找到包含该生产线的厂房
       let updatedFactories = [...state.state.production.factories];
       let lineName = '';
@@ -1071,6 +993,9 @@ export const useEnterpriseStore = create<{
   // 开始生产：按产品结构投料并支付加工费1M（运行控制表：季度-10）
   startProduction: (lineId) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const target = state.state.production.factories
         .flatMap(f => f.productionLines)
         .find(line => line.id === lineId);
@@ -1151,6 +1076,9 @@ export const useEnterpriseStore = create<{
   // 生产线转产
   convertProductionLine: (lineId, newProduct: 'P1' | 'P2') =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       // 找到包含该生产线的厂房
       let updatedFactories = [...state.state.production.factories];
       let lineName = '';
@@ -1239,6 +1167,9 @@ export const useEnterpriseStore = create<{
   // 移除生产线
   removeProductionLine: (factoryId, lineId) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       // 找到对应的厂房
       const factoryIndex = state.state.production.factories.findIndex(f => f.id === factoryId);
       if (factoryIndex === -1) {
@@ -1324,6 +1255,9 @@ export const useEnterpriseStore = create<{
   // 下原料订单（R1/R2提前1季、R3/R4提前2季；到货入库时付款，绝对季度索引跨年不失序）
   placeRawMaterialOrder: (materialType, quantity) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const material = state.state.logistics.rawMaterials.find((m) => m.type === materialType);
       if (!material) return state;
       if (quantity <= 0) {
@@ -1388,6 +1322,9 @@ export const useEnterpriseStore = create<{
   // 取消原材料订单（下单未付款，取消无资金变动）
   cancelRawMaterialOrder: (orderId) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       // 找到要取消的订单
       const orderToCancel = state.state.logistics.rawMaterialOrders.find(order => order.id === orderId);
       if (!orderToCancel) return state;
@@ -1433,46 +1370,15 @@ export const useEnterpriseStore = create<{
       };
     }),
 
-  updateRawMaterialInventory: (materialType, quantity) =>
-    set((state) => {
-      const newRawMaterials = state.state.logistics.rawMaterials.map((material) =>
-        material.type === materialType
-          ? { ...material, quantity: material.quantity + quantity }
-          : material
-      );
-      return {
-        state: {
-          ...state.state,
-          logistics: {
-            ...state.state.logistics,
-            rawMaterials: newRawMaterials,
-          },
-        },
-      };
-    }),
 
-  updateFinishedProductInventory: (productType, quantity) =>
-    set((state) => {
-      const newFinishedProducts = state.state.logistics.finishedProducts.map((product) =>
-        product.type === productType
-          ? { ...product, quantity: product.quantity + quantity }
-          : product
-      );
-      return {
-        state: {
-          ...state.state,
-          logistics: {
-            ...state.state.logistics,
-            finishedProducts: newFinishedProducts,
-          },
-        },
-      };
-    }),
 
   // 营销操作
   // 投放广告（年初第1季度订货会前；修改后规则：一次投放覆盖本地+区域市场、P1+P2产品）
   placeAdvertisement: (amount) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { finance, operation, marketing } = state.state;
       if (operation.currentQuarter !== 1) {
         return { validationError: '广告投放是年初（第1季度）订货会操作' };
@@ -1541,6 +1447,9 @@ export const useEnterpriseStore = create<{
   // 参加订货会（年初第1季度）：按广告投入生成当年可选订单池
   enterOrderMeeting: () =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { operation, marketing } = state.state;
       if (operation.currentQuarter !== 1) {
         return { validationError: '订货会在年初（第1季度）召开' };
@@ -1603,6 +1512,9 @@ export const useEnterpriseStore = create<{
   // 投资市场开拓/维护（年末第4季度，每市场每年1M，可中断；已准入市场每年需投1M维持）
   investMarketDevelopment: (marketType) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { finance, operation, marketing } = state.state;
       if (operation.currentQuarter !== 4) {
         return { validationError: '市场开拓/维护投资是年末（第4季度）操作' };
@@ -1676,6 +1588,9 @@ export const useEnterpriseStore = create<{
   // 投资ISO认证（年末第4季度，每年各1M：ISO9000≥2年、ISO14000≥3年，可中断）
   investISOCertification: (isoType) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const { finance, operation, marketing } = state.state;
       if (operation.currentQuarter !== 4) {
         return { validationError: 'ISO认证投资是年末（第4季度）操作' };
@@ -1748,6 +1663,9 @@ export const useEnterpriseStore = create<{
   // 新增可选订单
   addAvailableOrder: (order) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       // 创建新订单，添加id和默认状态
       const newOrder = {
         id: `order-${Date.now()}`,
@@ -1785,6 +1703,9 @@ export const useEnterpriseStore = create<{
   // 移动订单到已选择订单
   moveOrderToSelected: (orderId) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const newAvailableOrders = state.state.marketing.availableOrders.filter(order => order.id !== orderId);
       const orderToMove = state.state.marketing.availableOrders.find((order) => order.id === orderId);
       
@@ -1808,6 +1729,9 @@ export const useEnterpriseStore = create<{
   // 选择订单（从可用列表移入已选列表，不重复）
   selectOrder: (orderId) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const order = state.state.marketing.availableOrders.find((o) => o.id === orderId);
       if (!order) {
         return { validationError: '该订单不在可选列表中' };
@@ -1827,6 +1751,9 @@ export const useEnterpriseStore = create<{
 
   deliverOrder: (orderId) =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const targetOrder = state.state.marketing.selectedOrders.find((order) => order.id === orderId);
       if (!targetOrder || targetOrder.isDelivered) {
         return state;
@@ -1900,6 +1827,9 @@ export const useEnterpriseStore = create<{
   // 运营操作
   nextQuarter: () =>
     set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
       const newQuarter = state.state.operation.currentQuarter === 4 ? 1 : state.state.operation.currentQuarter + 1;
       const newYear = state.state.operation.currentQuarter === 4 ? state.state.operation.currentYear + 1 : state.state.operation.currentYear;
       const newAbsQuarter = absQuarter(newYear, newQuarter);

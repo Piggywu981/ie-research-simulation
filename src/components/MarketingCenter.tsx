@@ -4,7 +4,7 @@ import { useEnterpriseStore } from '../store/enterpriseStore';
 import { Market, Order, ISOCertification, Advertisement } from '../types/enterprise';
 
 const MarketingCenter: React.FC = () => {
-  const { state, placeAdvertisement, selectOrder, deliverOrder, investMarketDevelopment, investISOCertification, addAvailableOrder, removeAvailableOrder, moveOrderToSelected } = useEnterpriseStore();
+  const { state, placeAdvertisement, enterOrderMeeting, selectOrder, deliverOrder, investMarketDevelopment, investISOCertification, addAvailableOrder, removeAvailableOrder, moveOrderToSelected } = useEnterpriseStore();
   const { marketing } = state;
   
   // 广告投放表单状态
@@ -14,7 +14,7 @@ const MarketingCenter: React.FC = () => {
 
   // 新增可选订单表单状态
   const [newOrderForm, setNewOrderForm] = useState({
-    productType: 'P1' as 'P1' | 'P2' | 'P3' | 'P4',
+    productType: 'P1' as 'P1' | 'P2',
     quantity: 1,
     unitPrice: 2.0,
     paymentPeriod: 1,
@@ -188,13 +188,32 @@ const MarketingCenter: React.FC = () => {
                   <div className="text-xs text-gray-500 mt-1">开拓进度</div>
                 </div>
                 {market.status !== 'available' && (
-                  <button 
-                    className="w-full mt-3 bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
-                    onClick={() => investMarketDevelopment(market.type)}
-                    disabled={market.status === 'developing'}
-                  >
-                    投资开拓市场
-                  </button>
+                  <>
+                    <button
+                      className="w-full mt-3 bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
+                      onClick={() => investMarketDevelopment(market.type)}
+                      disabled={market.status === 'developing' || state.operation.currentQuarter !== 4 || market.investedThisYear || state.finance.cash < 1 || state.isPaused}
+                    >
+                      {market.investedThisYear ? '本年度已投资' : '投资开拓（1M/年）'}
+                    </button>
+                    {state.operation.currentQuarter !== 4 && (
+                      <div className="text-xs text-red-500 text-center mt-1">年末（第4季度）操作</div>
+                    )}
+                  </>
+                )}
+                {market.status === 'available' && (
+                  <>
+                    <button
+                      className={`w-full mt-3 py-1 px-3 rounded text-sm ${market.investedThisYear ? 'bg-green-100 text-green-700' : 'bg-emerald-500 text-white hover:bg-emerald-600'} disabled:opacity-60`}
+                      onClick={() => investMarketDevelopment(market.type)}
+                      disabled={market.investedThisYear || state.operation.currentQuarter !== 4 || state.finance.cash < 1 || state.isPaused}
+                    >
+                      {market.investedThisYear ? '本年度已维护 ✓' : '投入1M维持准入'}
+                    </button>
+                    {state.operation.currentQuarter !== 4 && market.type !== 'local' && (
+                      <div className="text-xs text-gray-400 text-center mt-1">年末维护（第1年豁免本地）</div>
+                    )}
+                  </>
                 )}
               </div>
             ))}
@@ -235,13 +254,18 @@ const MarketingCenter: React.FC = () => {
                   <div className="text-xs text-gray-500 mt-1">认证进度</div>
                 </div>
                 {iso.status !== 'certified' && (
-                  <button 
-                    className="w-full mt-3 bg-green-500 text-white py-1 px-3 rounded text-sm hover:bg-green-600 disabled:bg-green-300"
-                    onClick={() => investISOCertification(iso.type)}
-                    disabled={iso.status === 'certifying'}
-                  >
-                    投资认证
-                  </button>
+                  <>
+                    <button
+                      className="w-full mt-3 bg-green-500 text-white py-1 px-3 rounded text-sm hover:bg-green-600 disabled:bg-green-300"
+                      onClick={() => investISOCertification(iso.type)}
+                      disabled={iso.status === 'certifying' || iso.investedThisYear || state.operation.currentQuarter !== 4 || state.finance.cash < 1 || state.isPaused}
+                    >
+                      {iso.investedThisYear ? '本年度已投资' : '投资认证（1M/年）'}
+                    </button>
+                    {state.operation.currentQuarter !== 4 && (
+                      <div className="text-xs text-red-500 text-center mt-1">年末（第4季度）操作</div>
+                    )}
+                  </>
                 )}
               </div>
             ))}
@@ -282,10 +306,23 @@ const MarketingCenter: React.FC = () => {
               </div>
               <button
                 type="submit"
-                className="w-full bg-blue-500 text-white py-2 px-4 rounded-lg hover:bg-blue-600 font-medium"
+                className="w-full bg-blue-500 text-white py-2 px-4 rounded-lg hover:bg-blue-600 font-medium disabled:bg-blue-300"
+                disabled={state.operation.currentQuarter !== 1 || state.isPaused}
               >
                 投放广告
               </button>
+              {state.operation.currentQuarter !== 1 && (
+                <div className="text-xs text-red-500 text-center">广告投放是年初（第1季度）订货会操作</div>
+              )}
+              <button
+                type="button"
+                onClick={() => enterOrderMeeting()}
+                className="w-full bg-indigo-500 text-white py-2 px-4 rounded-lg hover:bg-indigo-600 font-medium disabled:bg-indigo-300"
+                disabled={state.operation.currentQuarter !== 1 || state.isPaused}
+              >
+                参加订货会（生成当年订单池）
+              </button>
+              <div className="text-xs text-gray-500 text-center">每 1M 广告解锁 2 张可选订单</div>
             </form>
           </div>
           
@@ -344,8 +381,6 @@ const MarketingCenter: React.FC = () => {
               >
                 <option value="P1">P1</option>
                 <option value="P2">P2</option>
-                <option value="P3">P3</option>
-                <option value="P4">P4</option>
               </select>
             </div>
             <div>
