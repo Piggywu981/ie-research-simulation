@@ -1,8 +1,49 @@
+// 贷款台账记录（长贷/短贷统一建模，支持还本付息生命周期）
+export interface LoanRecord {
+  id: string;
+  kind: 'long' | 'short';
+  principal: number;
+  rate: number; // 年息
+  drawnAbs: number; // 放贷绝对季度
+  termQuarters: number; // 期限（季度）
+}
+
+// 年度台账（利润表科目累计，随年末结账归档清零）
+export interface AnnualLedger {
+  salesRevenue: number;
+  directCosts: number;
+  adminFee: number;
+  adFee: number;
+  marketDevFee: number;
+  rdFee: number;
+  isoFee: number;
+  conversionFee: number;
+  maintenanceFee: number;
+  rentFee: number;
+  otherFee: number;
+  depreciation: number;
+  interestExpense: number;
+  discountFee: number;
+  extraExpense: number;
+}
+
+// 利润表计算结果
+export interface IncomeStatementResult {
+  grossProfit: number;
+  beforeDepreciation: number;
+  beforeInterest: number;
+  pretax: number;
+  tax: number;
+  net: number;
+}
+
 // 财务数据类型
 export interface FinanceData {
   // 现金
   cash: number;
-  // 长期贷款
+  // 贷款台账
+  loans: LoanRecord[];
+  // 长期贷款（聚合展示字段，与台账联动）
   longTermLoan: {
     amount: number;
     term: number; // 剩余期限（季度）
@@ -10,7 +51,7 @@ export interface FinanceData {
     maxAmount: number; // 最大贷款金额
     minAmount: number; // 最小贷款金额
   };
-  // 短期贷款
+  // 短期贷款（聚合展示字段，与台账联动）
   shortTermLoan: {
     amount: number;
     term: number; // 剩余期限（季度）
@@ -48,6 +89,8 @@ export interface ProductionLine {
   maintenanceCost: number;
   salvageValue: number;
   remainingLife: number; // 剩余使用年限
+  netValue: number; // 设备净值（折旧计提基数）
+  builtInYear: number; // 安装完工年份（0 表示开局既有），当年建成不提折旧
   inProgressProducts: number; // 在制品数量
   installationProgress: number; // 安装进度（0到installationPeriod）
   conversionProgress: number; // 转产进度（0到conversionPeriod）
@@ -73,6 +116,8 @@ export interface ProductionData {
       completed: boolean;
       progress: number; // 研发进度（0-6）
       totalInvestment: number;
+      status: 'idle' | 'active' | 'completed'; // 分期研发：待启动/进行中/已完成
+      paidQuarters: number; // 已支付研发投资的季度数（1M/季 × 6季）
     };
     P3: {
       completed: boolean;
@@ -104,14 +149,14 @@ export interface FinishedProduct {
   price: number;
 }
 
-// 原材料订单类型
+// 原材料订单类型（orderPeriod/arrivalPeriod 为绝对季度索引，跨年不失序）
 export interface RawMaterialOrder {
   id: string;
   materialType: 'R1' | 'R2' | 'R3' | 'R4';
   quantity: number;
   price: number;
-  orderPeriod: number; // 下单季度
-  arrivalPeriod: number; // 预计到货季度
+  orderPeriod: number; // 下单绝对季度
+  arrivalPeriod: number; // 预计到货绝对季度
 }
 
 // 物流数据类型
@@ -130,6 +175,8 @@ export interface Market {
   name: string;
   status: 'available' | 'developing' | 'unavailable';
   developmentProgress: number; // 开发进度（年）
+  yearsInvested: number; // 累计投资年数
+  investedThisYear: boolean; // 本年度是否已投资（开拓或维持）
   annualMaintenanceCost: number;
 }
 
@@ -138,7 +185,9 @@ export interface ISOCertification {
   type: 'ISO9000' | 'ISO14000';
   name: string;
   status: 'certified' | 'certifying' | 'uncertified';
-  certificationProgress: number; // 认证进度（季度）
+  certificationProgress: number; // 认证进度（年）
+  yearsInvested: number; // 累计投资年数
+  investedThisYear: boolean; // 本年度是否已投资
   totalCost: number;
 }
 
@@ -188,6 +237,7 @@ export interface FinancialLogRecord {
   cashChange: number;
   newCash: number;
   operator: string;
+  stepId?: string; // 运行控制表步骤标记：'b-1'..'b-4'（年初）| 'q-1'..'q-20'（季度）| 'e-1'..'e-6'（年末）
 }
 
 // 现金流量记录类型
@@ -223,6 +273,12 @@ export interface OperationData {
   };
   // 现金流量历史记录
   cashFlowHistory: CashFlowRecord[];
+  // 本年度台账（年末结账后归档至 yearlyLedgers 并清零）
+  annualLedger: AnnualLedger;
+  // 历年台账归档
+  yearlyLedgers: Record<number, AnnualLedger>;
+  // 历年利润表归档
+  yearlyIncomeStatements: Record<number, IncomeStatementResult>;
 };
 
 // 存档类型
@@ -232,6 +288,7 @@ export interface SaveFile {
   enterpriseName: string;
   timestamp: number;
   resetCount: number;
+  version: number; // 存档格式版本：1=旧版（需迁移），2=贷款台账/年度台账/绝对季度索引
   state: EnterpriseState;
   createdAt: string;
 }
@@ -252,4 +309,6 @@ export interface EnterpriseState {
   logistics: LogisticsData;
   marketing: MarketingData;
   operation: OperationData;
+  // 运营暂停（教学讲解模式）：暂停期间所有变更类操作被拒绝
+  isPaused: boolean;
 };

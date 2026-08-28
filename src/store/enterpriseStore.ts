@@ -1,34 +1,49 @@
 import { create } from 'zustand';
-import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order } from '../types/enterprise';
+import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord } from '../types/enterprise';
+import { absQuarter, emptyLedger } from '../utils/rules';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
 
-// 企业初始状态
+// 企业初始状态（严格遵循课程标准，见设计规格第2/3节）：
+// 现金20M + 应收15M + 在制品8M + 成品6M + 原料3M = 流动资产52M；
+// 土地建筑40M + 机器设备13M = 固定资产53M；总资产105M = 负债41M + 权益64M
 const initialState: EnterpriseState = {
+  isPaused: false,
   finance: {
-    cash: 40, // 40M（根据规则设定的初始现金）
+    cash: 20, // 现金20M
+    loans: [
+      // 初始长期贷款40M：3年期、年息10%，第1年年末起付息、第3年年末到期还本
+      {
+        id: 'loan-init-long',
+        kind: 'long',
+        principal: 40,
+        rate: 0.1,
+        drawnAbs: absQuarter(1, 1) - 4, // 开局前放贷
+        termQuarters: 12,
+      },
+    ],
     longTermLoan: {
-      amount: 0, // 初始贷款为0
+      amount: 40, // 初始长期贷款40M（聚合展示，与台账联动）
       term: 12, // 3年 = 12季度
       interestRate: 0.1, // 10%
       maxAmount: 40, // 最多40M
       minAmount: 20, // 每次20M
     },
     shortTermLoan: {
-      amount: 0, // 初始贷款为0
+      amount: 0, // 初始短期贷款为0
       term: 4, // 1年 = 4季度
       interestRate: 0.05, // 5%
       maxAmount: 40, // 最多40M
       minAmount: 20, // 每次20M
       lendingPeriods: [1, 6], // 1月和6月放贷（对应季度1和季度3）
     },
-    accountsReceivable: [0, 0, 0, 0], // 初始无应收账款
+    accountsReceivable: [0, 0, 0, 15], // 应收账款15M（4Q账期）
     accountsPayable: 0,
-    taxesPayable: 0, // 初始无应交税
-    equity: 60 + 16 + 0 + 0 + 0 - 40, // 总资产 - 负债 = 权益 (厂房40+20 + 设备16 + 原料0 + 成品0 + 在制品0) - 现金40 = 36
-    retainedProfit: 7, // 利润留存
-    annualNetProfit: 0, // 初始年度净利
+    taxesPayable: 1, // 应交税1M（上一年所得税，下年初交纳）
+    equity: 50, // 股东资本50M
+    retainedProfit: 11, // 利润留存11M
+    annualNetProfit: 3, // 上年度净利3M（权益64 = 50 + 11 + 3）
   },
   // 生产线类型余量设置
   productionLineLimits: {
@@ -43,7 +58,7 @@ const initialState: EnterpriseState = {
         id: 'factory-1',
         name: '企业1大厂房',
         type: 'large',
-        purchasePrice: 40, // 大厂房价值40M
+        purchasePrice: 40, // 大厂房价值40M（自有，不提折旧）
         capacity: 6, // 大厂房6个生产位
         productionLines: [
           {
@@ -60,7 +75,9 @@ const initialState: EnterpriseState = {
             maintenanceCost: 1, // 1M/年维护费
             salvageValue: 4, // 出售残值4M
             remainingLife: 15, // 剩余使用年限
-            inProgressProducts: 0, // 0个P1在制品，价值0M
+            netValue: 7, // 设备净值（与line-2合计13M，与资产负债表一致）
+            builtInYear: 0, // 开局既有设备
+            inProgressProducts: 2, // P1在制品2个（合计4个/8M）
             installationProgress: 0, // 已完成安装
             conversionProgress: 0, // 未在转产
           },
@@ -70,7 +87,7 @@ const initialState: EnterpriseState = {
         id: 'factory-2',
         name: '企业1小厂房',
         type: 'small',
-        purchasePrice: 20, // 小厂房价值20M
+        purchasePrice: 30, // 小厂房价值30M（初始为租赁，年末付租金3M/年）
         capacity: 4, // 小厂房4个生产位
         productionLines: [
           {
@@ -87,7 +104,9 @@ const initialState: EnterpriseState = {
             maintenanceCost: 1, // 1M/年维护费
             salvageValue: 4, // 出售残值4M
             remainingLife: 15, // 剩余使用年限
-            inProgressProducts: 0, // 0个P1在制品，价值0M
+            netValue: 6, // 设备净值（与line-1合计13M）
+            builtInYear: 0, // 开局既有设备
+            inProgressProducts: 2, // P1在制品2个（合计4个/8M）
             installationProgress: 0, // 已完成安装
             conversionProgress: 0, // 未在转产
           },
@@ -95,11 +114,13 @@ const initialState: EnterpriseState = {
       },
     ],
     productRD: {
-      P1: true, // 已完成研发
+      P1: true, // 已完成研发（已取得P1生产资格）
       P2: {
         completed: false,
         progress: 0, // 0/6
         totalInvestment: 0,
+        status: 'idle', // 待启动（6Q分期研发，1M/季）
+        paidQuarters: 0,
       },
       P3: {
         completed: false,
@@ -115,30 +136,31 @@ const initialState: EnterpriseState = {
   },
   logistics: {
     rawMaterials: [
-      { type: 'R1', name: '原材料1', quantity: 0, price: 1, leadTime: 1 }, // 0个R1，每个1M，共计0M
+      { type: 'R1', name: '原材料1', quantity: 3, price: 1, leadTime: 1 }, // 3个R1，共3M
       { type: 'R2', name: '原材料2', quantity: 0, price: 1, leadTime: 1 },
       { type: 'R3', name: '原材料3', quantity: 0, price: 1, leadTime: 2 },
       { type: 'R4', name: '原材料4', quantity: 0, price: 1, leadTime: 2 },
     ],
     finishedProducts: [
-      { type: 'P1', name: '产品1', quantity: 0, price: 2 }, // 0个P1，每个2M，共计0M
-      { type: 'P2', name: '产品2', quantity: 0, price: 4 }, // P2=R1+R2+1M=3M，定价4M
-      { type: 'P3', name: '产品3', quantity: 0, price: 6 }, // P3=2R2+R3+1M=4M，定价6M
-      { type: 'P4', name: '产品4', quantity: 0, price: 8 }, // P4=R2+R3+2R4+1M=5M，定价8M
+      { type: 'P1', name: '产品1', quantity: 3, price: 2 }, // 3个P1成品，按成本计6M
+      { type: 'P2', name: '产品2', quantity: 0, price: 3 }, // P2成本=R1+R2+1M=3M
+      { type: 'P3', name: '产品3', quantity: 0, price: 4 },
+      { type: 'P4', name: '产品4', quantity: 0, price: 5 },
     ],
-    rawMaterialOrders: [], // 初始无原料订单
+    rawMaterialOrders: [], // 初始无在途原料订单
   },
   marketing: {
     markets: [
-      { type: 'local', name: '本地市场', status: 'available', developmentProgress: 4, annualMaintenanceCost: 1 }, // 已开通，进度4Q
-      { type: 'regional', name: '区域市场', status: 'developing', developmentProgress: 0, annualMaintenanceCost: 1 }, // 第二年可用
-      { type: 'domestic', name: '国内市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 }, // 第三年可用
-      { type: 'asian', name: '亚洲市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 },
-      { type: 'international', name: '国际市场', status: 'unavailable', developmentProgress: 0, annualMaintenanceCost: 1 },
+      // 年度投资模型：developmentProgress/yearsInvested 以年计
+      { type: 'local', name: '本地市场', status: 'available', developmentProgress: 0, yearsInvested: 0, investedThisYear: false, annualMaintenanceCost: 1 }, // 已准入
+      { type: 'regional', name: '区域市场', status: 'unavailable', developmentProgress: 0, yearsInvested: 0, investedThisYear: false, annualMaintenanceCost: 1 },
+      { type: 'domestic', name: '国内市场', status: 'unavailable', developmentProgress: 0, yearsInvested: 0, investedThisYear: false, annualMaintenanceCost: 1 },
+      { type: 'asian', name: '亚洲市场', status: 'unavailable', developmentProgress: 0, yearsInvested: 0, investedThisYear: false, annualMaintenanceCost: 1 },
+      { type: 'international', name: '国际市场', status: 'unavailable', developmentProgress: 0, yearsInvested: 0, investedThisYear: false, annualMaintenanceCost: 1 },
     ],
     isoCertifications: [
-      { type: 'ISO9000', name: 'ISO9000认证', status: 'uncertified', certificationProgress: 0, totalCost: 0 },
-      { type: 'ISO14000', name: 'ISO14000认证', status: 'uncertified', certificationProgress: 0, totalCost: 0 },
+      { type: 'ISO9000', name: 'ISO9000认证', status: 'uncertified', certificationProgress: 0, yearsInvested: 0, investedThisYear: false, totalCost: 0 },
+      { type: 'ISO14000', name: 'ISO14000认证', status: 'uncertified', certificationProgress: 0, yearsInvested: 0, investedThisYear: false, totalCost: 0 },
     ],
     advertisements: [],
     availableOrders: [],
@@ -157,8 +179,8 @@ const initialState: EnterpriseState = {
         quarter: 1,
         timestamp: Date.now(),
         description: '初始现金',
-        cashChange: 40,
-        newCash: 40,
+        cashChange: 20,
+        newCash: 20,
         operator: '系统初始化',
       },
     ],
@@ -173,11 +195,84 @@ const initialState: EnterpriseState = {
       {
         year: 1,
         quarter: 1,
-        cash: 40,
+        cash: 20,
         description: '初始现金',
       },
     ],
+    annualLedger: emptyLedger(),
+    yearlyLedgers: {},
+    yearlyIncomeStatements: {},
   },
+};
+
+// 旧版（v1）存档迁移：补齐贷款台账、年度台账、年度化市场/ISO、生产线净值等新字段。
+// v1 的原料到货季度为 1~4 循环值（跨年即错），在途订单直接作废并提示。
+const migrateStateV1 = (s: EnterpriseState): EnterpriseState => {
+  const state: EnterpriseState = JSON.parse(JSON.stringify(s));
+  state.isPaused = false;
+
+  if (!state.finance.loans) {
+    state.finance.loans = [];
+  }
+  // 旧版长贷聚合值转为一笔台账（自当前时点起算 3 年期限）
+  if (state.finance.longTermLoan?.amount > 0 && !state.finance.loans.some(l => l.kind === 'long')) {
+    state.finance.loans.push({
+      id: `loan-migrated-long-${Date.now()}`,
+      kind: 'long',
+      principal: state.finance.longTermLoan.amount,
+      rate: state.finance.longTermLoan.interestRate ?? 0.1,
+      drawnAbs: absQuarter(state.operation.currentYear, state.operation.currentQuarter),
+      termQuarters: 12,
+    });
+  }
+  // 旧版短贷聚合值转为一笔台账（1 年期限）
+  if (state.finance.shortTermLoan?.amount > 0 && !state.finance.loans.some(l => l.kind === 'short')) {
+    state.finance.loans.push({
+      id: `loan-migrated-short-${Date.now()}`,
+      kind: 'short',
+      principal: state.finance.shortTermLoan.amount,
+      rate: state.finance.shortTermLoan.interestRate ?? 0.05,
+      drawnAbs: absQuarter(state.operation.currentYear, state.operation.currentQuarter),
+      termQuarters: 4,
+    });
+  }
+
+  // 生产线：净值/建成年份缺省按原值、开局既有处理
+  state.production?.factories?.forEach(f => {
+    f.productionLines.forEach(line => {
+      if (typeof line.netValue !== 'number') line.netValue = line.purchasePrice;
+      if (typeof line.builtInYear !== 'number') line.builtInYear = 0;
+    });
+  });
+
+  // 研发 P2 分期字段
+  if (state.production?.productRD?.P2 && !state.production.productRD.P2.status) {
+    state.production.productRD.P2.status = state.production.productRD.P2.completed ? 'completed' : 'idle';
+    state.production.productRD.P2.paidQuarters = state.production.productRD.P2.progress ?? 0;
+  }
+
+  // 市场/ISO 年度模型字段
+  state.marketing?.markets?.forEach(m => {
+    if (typeof m.yearsInvested !== 'number') m.yearsInvested = m.status === 'available' ? 1 : 0;
+    m.investedThisYear = false;
+  });
+  state.marketing?.isoCertifications?.forEach(iso => {
+    if (typeof iso.yearsInvested !== 'number') iso.yearsInvested = 0;
+    iso.investedThisYear = false;
+  });
+
+  // 年度台账
+  if (!state.operation.annualLedger) state.operation.annualLedger = emptyLedger();
+  if (!state.operation.yearlyLedgers) state.operation.yearlyLedgers = {};
+  if (!state.operation.yearlyIncomeStatements) state.operation.yearlyIncomeStatements = {};
+
+  // v1 原料订单的到货季度为 1~4 循环值，无法可靠换算，直接作废
+  const hadOrders = (state.logistics?.rawMaterialOrders?.length ?? 0) > 0;
+  if (hadOrders) {
+    state.logistics.rawMaterialOrders = [];
+  }
+
+  return state;
 };
 
 // 创建Zustand store
@@ -254,10 +349,11 @@ export const useEnterpriseStore = create<{
       enterpriseName: '企业1',
       timestamp,
       resetCount,
+      version: 2,
       state: JSON.parse(JSON.stringify(state)),
       createdAt: formattedDate,
     };
-    
+
     // 加载现有存档
     const saveFiles = get().getSaveFiles();
     // 添加新存档
@@ -283,6 +379,7 @@ export const useEnterpriseStore = create<{
       enterpriseName: '企业1',
       timestamp,
       resetCount,
+      version: 2,
       state: JSON.parse(JSON.stringify(state)),
       createdAt: formattedDate,
     };
@@ -301,12 +398,16 @@ export const useEnterpriseStore = create<{
 
   // 加载游戏
   loadGame: (saveFile: SaveFile) => {
-    set({ 
-      state: JSON.parse(JSON.stringify(saveFile.state)),
+    const raw = JSON.parse(JSON.stringify(saveFile.state)) as EnterpriseState;
+    const migrated = migrateStateV1(raw);
+    set({
+      state: migrated,
       resetCount: saveFile.resetCount
     });
     // 添加操作日志
-    get().addOperationLog('加载存档', `加载存档：${saveFile.name}`);
+    get().addOperationLog('加载存档', saveFile.version === 2
+      ? `加载存档：${saveFile.name}`
+      : `加载存档：${saveFile.name}（旧版存档已迁移至v2，建议重置开新局）`);
   },
 
   // 重置游戏
@@ -712,6 +813,8 @@ export const useEnterpriseStore = create<{
         maintenanceCost: 1, // 所有生产线维护费都是1M/年
         salvageValue: config.salvageValue,
         remainingLife: config.remainingLife,
+        netValue: config.purchasePrice, // 新购设备净值=原值
+        builtInYear: state.state.operation.currentYear, // 当年建成（当年不提折旧、免维护费）
         inProgressProducts: config.installationPeriod > 0 ? 0 : 1, // 安装中的生产线没有在制品
         installationProgress: 0,
         conversionProgress: 0,
@@ -1610,25 +1713,28 @@ export const useEnterpriseStore = create<{
         operator: '系统自动',
       };
       
-      // 5. 更新生产研发进度
+      // 5. 更新生产研发进度（仅 P2 开放研发）
       const updatedProductRD = { ...state.state.production.productRD };
       let rdInvestment = 0;
       // 记录研发完成的产品
       const completedProducts: string[] = [];
-      for (const product of ['P2', 'P3', 'P4'] as const) {
-        // 只对已经投资但未完成的产品更新进度
-        if (!updatedProductRD[product].completed && updatedProductRD[product].totalInvestment > 0) {
+      {
+        const p2 = updatedProductRD.P2;
+        // 只对已经投资但未完成的 P2 更新进度
+        if (!p2.completed && p2.totalInvestment > 0) {
           // 每个季度研发进度+1
-          const newProgress = updatedProductRD[product].progress + 1;
-          const requiredProgress = 6; // P2、P3、P4都改为6个季度
-          updatedProductRD[product] = {
-            ...updatedProductRD[product],
+          const newProgress = p2.progress + 1;
+          const requiredProgress = 6;
+          updatedProductRD.P2 = {
+            ...p2,
             progress: Math.min(newProgress, requiredProgress),
             completed: newProgress >= requiredProgress,
+            status: newProgress >= requiredProgress ? 'completed' : p2.status,
+            paidQuarters: p2.paidQuarters,
           };
           // 记录研发完成的产品
           if (newProgress >= requiredProgress) {
-            completedProducts.push(product);
+            completedProducts.push('P2');
           }
         }
       }
