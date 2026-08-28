@@ -69,7 +69,7 @@ describe('长期贷款', () => {
 
     // 第2年年末
     advance(4);
-    const logs2 = store().state.operation.financialLogs.filter(l => l.stepId === 'e-1' && l.year === 3);
+    const logs2 = store().state.operation.financialLogs.filter(l => l.stepId === 'e-1' && l.year === 2);
     expect(logs2[0].description).toContain('利息4M');
 
     // 第3年年末：付息 + 还本40M（注入足够现金避免负现金守卫拦截）
@@ -80,7 +80,7 @@ describe('长期贷款', () => {
       },
     });
     advance(4);
-    const logs3 = store().state.operation.financialLogs.filter(l => l.stepId === 'e-1' && l.year === 4);
+    const logs3 = store().state.operation.financialLogs.filter(l => l.stepId === 'e-1' && l.year === 3);
     expect(logs3[0].description).toContain('利息4M');
     expect(logs3[0].description).toContain('还本40M');
     expect(store().state.finance.loans.filter(l => l.kind === 'long')).toHaveLength(0);

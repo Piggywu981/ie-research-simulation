@@ -963,8 +963,13 @@ export const useEnterpriseStore = create<{
         productionLines: [...factory.productionLines, newLine],
       };
 
-      // 扣除购买生产线的费用
-      const purchaseCost = -newLine.purchasePrice;
+      // 购买生产线：按安装周期平均支付投资（无安装期的整额即付），首期随购买支付
+      const installmentCount = Math.max(newLine.installationPeriod, 1);
+      const firstPayment = newLine.purchasePrice / installmentCount;
+      if (state.state.finance.cash < firstPayment) {
+        return { validationError: `现金不足：需支付${config.name}首期投资${firstPayment}M` };
+      }
+      const purchaseCost = -firstPayment;
       const newCash = state.state.finance.cash + purchaseCost;
 
       const updatedState = {
@@ -985,10 +990,11 @@ export const useEnterpriseStore = create<{
               year: state.state.operation.currentYear,
               quarter: state.state.operation.currentQuarter,
               timestamp: Date.now(),
-              description: `购买${config.name}，花费${newLine.purchasePrice}M`,
+              description: `-${firstPayment}M(${config.name}投资首期${newLine.installationPeriod > 0 ? `，共${installmentCount}期` : '，一次性付清'})`,
               cashChange: purchaseCost,
               newCash,
               operator: '企业1管理者',
+              stepId: 'q-8',
             },
             ...state.state.operation.financialLogs
           ],
@@ -1001,7 +1007,7 @@ export const useEnterpriseStore = create<{
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
         action: '添加生产线',
-        dataChange: `在${factory.name}添加了${product}产品的${config.name}，花费${config.purchasePrice}M`,
+        dataChange: `在${factory.name}添加了${product}产品的${config.name}，总投资${config.purchasePrice}M${newLine.installationPeriod > 0 ? `，按${newLine.installationPeriod}个季度平均支付` : '，一次性付清'}`,
       };
 
       updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
@@ -1195,19 +1201,24 @@ export const useEnterpriseStore = create<{
         },
       };
 
-      // 添加财务日志
+      // 添加财务日志（运行控制表：季度-8）
       const financialLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-conversion`,
         year: state.state.operation.currentYear,
         quarter: state.state.operation.currentQuarter,
         timestamp: Date.now(),
-        description: `生产线转产费用，${lineName}从${oldProduct}转产到${newProduct}，花费${conversionCost}M`,
+        description: `-${conversionCost}M(转产费，${lineName}从${oldProduct}转产到${newProduct})`,
         cashChange: -conversionCost,
         newCash: updatedState.finance.cash,
         operator: '企业1管理者',
+        stepId: 'q-8',
       };
 
       updatedState.operation.financialLogs = [financialLog, ...updatedState.operation.financialLogs];
+      updatedState.operation.annualLedger = {
+        ...updatedState.operation.annualLedger,
+        conversionFee: updatedState.operation.annualLedger.conversionFee + conversionCost,
+      };
 
       // 添加操作日志
       const newLog = {
@@ -1254,8 +1265,10 @@ export const useEnterpriseStore = create<{
       const updatedFactories = [...state.state.production.factories];
       updatedFactories[factoryIndex] = updatedFactory;
 
-      // 更新现金（加上残值）
-      const salvageIncome = salvageValue;
+      // 出售规则：净值<残值→净值转现金；净值>残值→残值转现金，差额计入综合费用（其他）
+      const netValue = typeof line.netValue === 'number' ? line.netValue : line.purchasePrice;
+      const salvageIncome = Math.min(netValue, salvageValue);
+      const saleLoss = Math.max(0, netValue - salvageValue);
       const newCash = state.state.finance.cash + salvageIncome;
 
       const updatedState = {
@@ -1276,13 +1289,18 @@ export const useEnterpriseStore = create<{
               year: state.state.operation.currentYear,
               quarter: state.state.operation.currentQuarter,
               timestamp: Date.now(),
-              description: `出售${line.name}，获得残值收入${salvageValue}M`,
+              description: `+${salvageIncome}M(出售${line.name}${saleLoss > 0 ? `，净值差额-${saleLoss}M计入综合费用` : ''})`,
               cashChange: salvageIncome,
               newCash,
               operator: '企业1管理者',
+              stepId: 'q-8',
             },
             ...state.state.operation.financialLogs
           ],
+          annualLedger: {
+            ...state.state.operation.annualLedger,
+            extraExpense: state.state.operation.annualLedger.extraExpense + saleLoss,
+          },
         },
       };
 
@@ -1291,8 +1309,8 @@ export const useEnterpriseStore = create<{
         id: `log-${Date.now()}`,
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
-        action: '移除生产线',
-        dataChange: `从${factory.name}移除了${line.name}，获得残值${salvageValue}M`,
+        action: '出售生产线',
+        dataChange: `从${factory.name}出售了${line.name}，转现金${salvageIncome}M${saleLoss > 0 ? `，净值损失${saleLoss}M计入综合费用` : ''}`,
       };
 
       updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
@@ -1976,22 +1994,18 @@ export const useEnterpriseStore = create<{
         stepId: 'q-5',
       };
       
-      // 生成季初现金盘点日志（在原材料入库后生成，使用更新后的状态）
+      // 生成季初现金盘点日志（原料取到货后库存，成品用季初库存）
       const quarterStartCash = initialCash + cashIncrease - rdInvestment;
-      // 获取当前产品库存情况
-      const currentFinishedProducts = state.state.logistics.finishedProducts.map(p => `${p.type}: ${p.quantity}`).join(', ');
-      // 获取当前原料库存情况（使用更新后的原材料库存）
-      const currentRawMaterials = newRawMaterials.map(m => `${m.type}: ${m.quantity}`).join(', ');
-      
       const quarterStartLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-start`,
         year: newYear,
         quarter: newQuarter,
         timestamp: Date.now(),
-        description: `第${newYear}年第${newQuarter}季度初现金盘点，现金余额：${quarterStartCash}M，成品库存：${currentFinishedProducts}，原料库存：${currentRawMaterials}`,
+        description: `(${quarterStartCash}M，${newRawMaterials.map(m => `${m.quantity}${m.type}`).join('+') || '0'}，${state.state.logistics.finishedProducts.map(p => `${p.quantity}${p.type}`).join('+') || '0'})`,
         cashChange: 0,
         newCash: quarterStartCash,
         operator: '系统自动',
+        stepId: 'q-1',
       };
       
       // 7. 处理生产线状态变化（安装、转产、生产）
@@ -2002,6 +2016,10 @@ export const useEnterpriseStore = create<{
       let totalProduced = 0;
       // 自动开工的加工费合计（现金支出，运行控制表：季度-10）
       let autoProcessFees = 0;
+      // 本季度安装投资分期付款合计（运行控制表：季度-8）
+      let totalInstallPayments = 0;
+      const installPaymentLogs: FinancialLogRecord[] = [];
+      let installPaymentFailed: string | null = null;
       const startProductionLogs: FinancialLogRecord[] = [];
       // 用于记录因原材料不足而停产的生产线
       const stoppedLines: {lineName: string, product: string, requiredMaterials: string[]}[] = [];
@@ -2063,14 +2081,33 @@ export const useEnterpriseStore = create<{
 
       newFactories.forEach((factory, factoryIndex) => {
         factory.productionLines.forEach((line, lineIndex) => {
-          // 处理安装中的生产线（安装完成的下一季度才开工，此处仅转运行态）
+          // 处理安装中的生产线（按安装周期平均支付投资；安装完成的下一季度才开工）
           if (line.status === 'installing') {
+            const installment = line.purchasePrice / Math.max(line.installationPeriod, 1);
+            const cashBeforeInstall = initialCash - shortSettlement.due + cashIncrease - materialPayment - totalInstallPayments;
+            if (cashBeforeInstall < installment) {
+              installPaymentFailed = `现金不足以支付${line.name}安装投资分期${installment}M，请先贴现或贷款`;
+              return;
+            }
+            totalInstallPayments += installment;
+            installPaymentLogs.push({
+              id: `finlog-${Date.now()}-install-${Math.random().toString(36).slice(2, 7)}`,
+              year: newYear,
+              quarter: newQuarter,
+              timestamp: Date.now(),
+              description: `-${installment}M(${line.name}安装投资分期)`,
+              cashChange: -installment,
+              newCash: 0,
+              operator: '系统自动',
+              stepId: 'q-8',
+            });
             const newInstallationProgress = line.installationProgress + 1;
             if (newInstallationProgress >= line.installationPeriod) {
               newFactories[factoryIndex].productionLines[lineIndex] = {
                 ...line,
                 status: 'running',
                 installationProgress: newInstallationProgress,
+                builtInYear: newYear, // 安装完成当年建成（当年不提折旧、免维护费）
                 inProgressProducts: 0, // 待下一季度投料开工
               };
             } else {
@@ -2138,6 +2175,10 @@ export const useEnterpriseStore = create<{
           }
         });
       });
+
+      if (installPaymentFailed) {
+        return { validationError: installPaymentFailed };
+      }
 
       // 8. 检查原材料是否耗尽，自动将生产线状态从"运行"更新为"停产"
       newFactories.forEach((factory, factoryIndex) => {
@@ -2409,7 +2450,7 @@ export const useEnterpriseStore = create<{
       }
 
       // 总现金支出（所得税不在结账时扣：计入应付税金、下年初交纳）
-      const totalCashOut = materialPayment + maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment + autoProcessFees;
+      const totalCashOut = materialPayment + totalInstallPayments + maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment + autoProcessFees;
 
       // 计算新的现金余额
       const newCash = initialCash - shortSettlement.due + cashIncrease - totalCashOut;
@@ -2520,13 +2561,13 @@ export const useEnterpriseStore = create<{
         isYearEnd ? { ...iso, investedThisYear: false } : iso
       );
       
-      // 构建所有日志记录
-      const allLogs = [shortSettlementLog, quarterStartLog, arLog, materialArrivalLog, ...startProductionLogs, productionLog, quarterEndLog];
+      // 构建所有日志记录（年末结算日志归属收尾年度第4季度，便于控制表按年推导）
+      const remappedYearEndLogs = yearEndLogs.map(l => ({ ...l, year: closingYear, quarter: 4 }));
+      const allLogs = [shortSettlementLog, quarterStartLog, arLog, materialArrivalLog, ...installPaymentLogs, ...startProductionLogs, productionLog, quarterEndLog, ...remappedYearEndLogs];
       // 只有当有研发投资时才添加研发投资日志
       if (rdLog) {
         allLogs.splice(5, 0, rdLog); // 插入到开工日志之后
       }
-      allLogs.push(...yearEndLogs);
       if (yearEndLog) {
         allLogs.push(yearEndLog);
       }
