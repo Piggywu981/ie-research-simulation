@@ -43,7 +43,7 @@ export interface LoanLike {
 }
 
 // 年末长贷结算：对每笔存续长贷付息、期限递减 4 个季度，到期还本
-export const settleLongLoansAtYearEnd = (loans: LoanLike[]) => {
+export const settleLongLoansAtYearEnd = <T extends LoanLike>(loans: T[]) => {
   let interest = 0;
   let principalRepaid = 0;
   const survivors = loans
@@ -57,12 +57,12 @@ export const settleLongLoansAtYearEnd = (loans: LoanLike[]) => {
       }
       return { ...l, termQuarters: remaining };
     })
-    .filter((l): l is LoanLike => l !== null);
+    .filter((l): l is T => l !== null);
   return { interest, principalRepaid, survivors };
 };
 
 // 季初短贷到期结算：到期一次还本付息
-export const settleDueShortLoans = (loans: LoanLike[], absNow: number) => {
+export const settleDueShortLoans = <T extends LoanLike>(loans: T[], absNow: number) => {
   let due = 0;
   const survivors = loans.filter((l) => {
     if (l.kind === 'short' && absNow === l.drawnAbs + l.termQuarters) {

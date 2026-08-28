@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord } from '../types/enterprise';
-import { absQuarter, emptyLedger } from '../utils/rules';
+import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd } from '../utils/rules';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -280,6 +280,9 @@ export const useEnterpriseStore = create<{
   state: EnterpriseState;
   saveFiles: SaveFile[];
   resetCount: number;
+  // 规则校验错误提示（UI toast 展示，用户可关闭）
+  validationError: string | null;
+  setValidationError: (message: string | null) => void;
   // 财务操作
   updateCash: (amount: number, description?: string) => void;
   updateLongTermLoan: (amount: number, term: number) => void;
@@ -324,6 +327,9 @@ export const useEnterpriseStore = create<{
   state: initialState,
   saveFiles: [],
   resetCount: resetCount,
+  validationError: null,
+
+  setValidationError: (message) => set({ validationError: message }),
 
   // 加载本地存储的存档
   getSaveFiles: () => {
@@ -535,93 +541,115 @@ export const useEnterpriseStore = create<{
       },
     })),
   
-  // 申请长期贷款
+  // 申请长期贷款（年末第4季度，每次20M，未还本余额上限40M，3年期年息10%）
   applyLongTermLoan: () =>
     set((state) => {
-      // 检查是否符合贷款条件
-      if (state.state.operation.currentQuarter !== 4) {
-        return state; // 只有第4季度才能申请长期贷款
+      const { finance, operation } = state.state;
+      if (operation.currentQuarter !== 4) {
+        return { validationError: '长期贷款只能在年末（第4季度）申请' };
       }
-      if (state.state.finance.longTermLoan.amount >= 40) {
-        return state; // 长期贷款已达上限
+      const longOutstanding = finance.loans.filter(l => l.kind === 'long').reduce((s, l) => s + l.principal, 0);
+      if (longOutstanding + 20 > finance.longTermLoan.maxAmount) {
+        return { validationError: '长期贷款未还本余额已达上限40M' };
       }
-      
-      const loanAmount = 20; // 每次20M
-      const newLongTermLoanAmount = state.state.finance.longTermLoan.amount + loanAmount;
-      const newCash = state.state.finance.cash + loanAmount;
-      
-      // 记录财务日志
+
+      const loanAmount = 20;
+      const newLoan: LoanRecord = {
+        id: `loan-long-${Date.now()}`,
+        kind: 'long',
+        principal: loanAmount,
+        rate: 0.1,
+        drawnAbs: absQuarter(operation.currentYear, operation.currentQuarter),
+        termQuarters: 12, // 3年
+      };
+      const newCash = finance.cash + loanAmount;
+
+      // 记录财务日志（运行控制表：年末-1）
       const financialLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}`,
-        year: state.state.operation.currentYear,
-        quarter: state.state.operation.currentQuarter,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
         timestamp: Date.now(),
-        description: `申请长期贷款20M，期限3年，年息10%`,
+        description: `+20M(申请长期贷款，3年期年息10%)`,
         cashChange: loanAmount,
         newCash,
         operator: '企业1管理者',
+        stepId: 'e-1',
       };
-      
+
       return {
+        validationError: null,
         state: {
           ...state.state,
           finance: {
-            ...state.state.finance,
+            ...finance,
+            loans: [...finance.loans, newLoan],
             longTermLoan: {
-              ...state.state.finance.longTermLoan,
-              amount: newLongTermLoanAmount,
+              ...finance.longTermLoan,
+              amount: longOutstanding + loanAmount,
             },
             cash: newCash,
           },
           operation: {
-            ...state.state.operation,
-            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+            ...operation,
+            financialLogs: [financialLog, ...operation.financialLogs],
           },
         },
       };
     }),
-  
-  // 申请短期贷款
+
+  // 申请短期贷款（每季度初第1/3季度，每次20M，未还本余额上限40M，1年期年息5%）
   applyShortTermLoan: () =>
     set((state) => {
-      // 检查是否符合贷款条件
-      if (![1, 3].includes(state.state.operation.currentQuarter)) {
-        return state; // 只有第1和第3季度才能申请短期贷款
+      const { finance, operation } = state.state;
+      if (![1, 3].includes(operation.currentQuarter)) {
+        return { validationError: '短期贷款只在第1季度初（1月）和第3季度初（6月）放贷' };
       }
-      if (state.state.finance.shortTermLoan.amount >= 40) {
-        return state; // 短期贷款已达上限
+      const shortOutstanding = finance.loans.filter(l => l.kind === 'short').reduce((s, l) => s + l.principal, 0);
+      if (shortOutstanding + 20 > finance.shortTermLoan.maxAmount) {
+        return { validationError: '短期贷款未还本余额已达上限40M' };
       }
-      
-      const loanAmount = 20; // 每次20M
-      const newShortTermLoanAmount = state.state.finance.shortTermLoan.amount + loanAmount;
-      const newCash = state.state.finance.cash + loanAmount;
-      
-      // 记录财务日志
+
+      const loanAmount = 20;
+      const newLoan: LoanRecord = {
+        id: `loan-short-${Date.now()}`,
+        kind: 'short',
+        principal: loanAmount,
+        rate: 0.05,
+        drawnAbs: absQuarter(operation.currentYear, operation.currentQuarter),
+        termQuarters: 4, // 1年
+      };
+      const newCash = finance.cash + loanAmount;
+
+      // 记录财务日志（运行控制表：季度-3 申请短期贷款）
       const financialLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}`,
-        year: state.state.operation.currentYear,
-        quarter: state.state.operation.currentQuarter,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
         timestamp: Date.now(),
-        description: `申请短期贷款20M，期限1年，年息5%`,
+        description: `+20M(申请短期贷款，1年期年息5%)`,
         cashChange: loanAmount,
         newCash,
         operator: '企业1管理者',
+        stepId: 'q-3',
       };
-      
+
       return {
+        validationError: null,
         state: {
           ...state.state,
           finance: {
-            ...state.state.finance,
+            ...finance,
+            loans: [...finance.loans, newLoan],
             shortTermLoan: {
-              ...state.state.finance.shortTermLoan,
-              amount: newShortTermLoanAmount,
+              ...finance.shortTermLoan,
+              amount: shortOutstanding + loanAmount,
             },
             cash: newCash,
           },
           operation: {
-            ...state.state.operation,
-            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+            ...operation,
+            financialLogs: [financialLog, ...operation.financialLogs],
           },
         },
       };
@@ -1682,14 +1710,30 @@ export const useEnterpriseStore = create<{
     set((state) => {
       const newQuarter = state.state.operation.currentQuarter === 4 ? 1 : state.state.operation.currentQuarter + 1;
       const newYear = state.state.operation.currentQuarter === 4 ? state.state.operation.currentYear + 1 : state.state.operation.currentYear;
-      
+      const newAbsQuarter = absQuarter(newYear, newQuarter);
+
       // 季度初日志记录 - 季初现金盘点的初始数据
       const initialCash = state.state.finance.cash;
-      
-      // 1. 处理季初现金盘点
-      // 2. 更新还贷/还本付息（这里简化处理，实际应根据贷款期限处理）
-      // 3. 申请短期贷款（这里简化处理，实际应根据放贷月份处理）
-      
+
+      // 2. 更新短贷/还本付息：到期短贷一次还本付息（运行控制表：季度-2）
+      const shortSettlement = settleDueShortLoans(state.state.finance.loans, newAbsQuarter);
+      if (shortSettlement.due > initialCash) {
+        return { validationError: `现金不足以偿还到期短贷本息 ${shortSettlement.due}M，请先贴现应收账款` };
+      }
+      const shortSettlementLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-short-settle`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: shortSettlement.due > 0
+          ? `更新短贷/还本付息：-本息${shortSettlement.due}M`
+          : '更新短贷：无到期短贷',
+        cashChange: -shortSettlement.due,
+        newCash: initialCash - shortSettlement.due,
+        operator: '系统自动',
+        stepId: 'q-2',
+      };
+
       // 应收账款滚动
       const newAR = [
         state.state.finance.accountsReceivable[1],
@@ -1697,10 +1741,10 @@ export const useEnterpriseStore = create<{
         state.state.finance.accountsReceivable[3],
         0,
       ] as [number, number, number, number];
-      
+
       // 增加现金（到期的应收账款）
       const cashIncrease = state.state.finance.accountsReceivable[0];
-      
+
       // 4. 更新应收账款/应收款收现日志
       const arLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-ar`,
@@ -1709,8 +1753,9 @@ export const useEnterpriseStore = create<{
         timestamp: Date.now(),
         description: `更新应收账款/应收款收现，收现金额：${cashIncrease}M`,
         cashChange: cashIncrease,
-        newCash: initialCash + cashIncrease,
+        newCash: initialCash - shortSettlement.due + cashIncrease,
         operator: '系统自动',
+        stepId: 'q-11',
       };
       
       // 5. 更新生产研发进度（仅 P2 开放研发）
@@ -2100,52 +2145,121 @@ export const useEnterpriseStore = create<{
         });
       }
       
-      // 8. 计算季度维护成本（如果是新的一年的第1季度）
+      // ===== 年末结账序列（推进出第4季度时执行）=====
+      const isYearEnd = state.state.operation.currentQuarter === 4;
+      const closingYear = state.state.operation.currentYear;
+      const yearEndLogs: FinancialLogRecord[] = [];
+
+      // e-1 支付利息/更新长期贷款：对每笔存续长贷付息、期限递减、到期还本
+      let longInterest = 0;
+      let longPrincipal = 0;
+      // 非年末季度：保留短贷结算后的全部存续贷款（含长贷）
+      let survivingLoans = shortSettlement.survivors;
+      if (isYearEnd) {
+        const longSettlement = settleLongLoansAtYearEnd(state.state.finance.loans);
+        longInterest = longSettlement.interest;
+        longPrincipal = longSettlement.principalRepaid;
+        // 年末：短贷保留未到期的，长贷替换为期限递减后的存续贷款
+        survivingLoans = [
+          ...shortSettlement.survivors.filter(l => l.kind === 'short'),
+          ...longSettlement.survivors,
+        ];
+        if (longInterest > 0 || longPrincipal > 0) {
+          yearEndLogs.push({
+            id: `finlog-${Date.now()}-long-settle`,
+            year: newYear,
+            quarter: newQuarter,
+            timestamp: Date.now(),
+            description: `年末长贷结算：-利息${longInterest}M${longPrincipal > 0 ? `，-还本${longPrincipal}M` : ''}`,
+            cashChange: -(longInterest + longPrincipal),
+            newCash: 0, // 稍后统一回填
+            operator: '系统自动',
+            stepId: 'e-1',
+          });
+        }
+      }
+
+      // e-2 支付设备维护费：当年在建/建成与当年出售的生产线免维护（出售即已移除）
       let maintenanceCost = 0;
-      if (newQuarter === 1) {
-        // 每年支付一次维护费
+      if (isYearEnd) {
         state.state.production.factories.forEach(factory => {
           factory.productionLines.forEach(line => {
-            maintenanceCost += line.maintenanceCost;
+            if (line.builtInYear < closingYear) maintenanceCost += line.maintenanceCost;
           });
         });
+        if (maintenanceCost > 0) {
+          yearEndLogs.push({
+            id: `finlog-${Date.now()}-maintenance`,
+            year: newYear,
+            quarter: newQuarter,
+            timestamp: Date.now(),
+            description: `支付设备维护费：-设备维护费${maintenanceCost}M`,
+            cashChange: -maintenanceCost,
+            newCash: 0,
+            operator: '系统自动',
+            stepId: 'e-2',
+          });
+        }
       }
-      
-      // 9. 计算贷款利息
-      // 长期贷款利息（每年支付）
-      let longTermInterest = 0;
-      if (newQuarter === 1) {
-        longTermInterest = state.state.finance.longTermLoan.amount * state.state.finance.longTermLoan.interestRate;
+
+      // e-3 支付租金/购买厂房：小厂房租赁，年末付租金3M/年（大厂房自有）
+      let rentCost = 0;
+      if (isYearEnd) {
+        state.state.production.factories.forEach(factory => {
+          if (factory.type === 'small') rentCost += 3;
+        });
+        if (rentCost > 0) {
+          yearEndLogs.push({
+            id: `finlog-${Date.now()}-rent`,
+            year: newYear,
+            quarter: newQuarter,
+            timestamp: Date.now(),
+            description: `支付厂房租金：-厂房租金${rentCost}M`,
+            cashChange: -rentCost,
+            newCash: 0,
+            operator: '系统自动',
+            stepId: 'e-3',
+          });
+        }
       }
-      
-      // 短期贷款利息（每季度支付）
-      const shortTermInterest = state.state.finance.shortTermLoan.amount * state.state.finance.shortTermLoan.interestRate;
-      
-      // 总利息支出
-      const totalInterest = longTermInterest + shortTermInterest;
-      
-      // 10. 支付行政管理费（第四季度开始时扣除1M）
+
+      // 10. 支付行政管理费（第四季度扣除1M，运行控制表：季度-16）
       const adminCost = newQuarter === 4 ? 1 : 0;
-      
-      // 总现金支出
-      const totalCashOut = maintenanceCost + totalInterest + adminCost + rdInvestment;
-      
-      // 计算新的现金余额
-      const newCash = state.state.finance.cash + cashIncrease - totalCashOut;
-      const cashChange = cashIncrease - totalCashOut;
-      
-      // 处理年度所得税（第四季度结束时）
-      let taxAmount = 0;
-      if (state.state.operation.currentQuarter === 4) {
-        // 计算所得税（假设税率为25%）
-        const annualProfit = state.state.finance.annualNetProfit;
-        taxAmount = annualProfit > 0 ? Math.round(annualProfit * 0.25 * 100) / 100 : 0;
+      if (adminCost > 0) {
+        yearEndLogs.push({
+          id: `finlog-${Date.now()}-admin`,
+          year: newYear,
+          quarter: newQuarter,
+          timestamp: Date.now(),
+          description: `支付行政管理费：-行政管理费${adminCost}M`,
+          cashChange: -adminCost,
+          newCash: 0,
+          operator: '系统自动',
+          stepId: 'q-16',
+        });
       }
-      
-      // 扣除所得税后的现金余额
-      const finalCash = newCash - taxAmount;
-      const finalCashChange = cashChange - taxAmount;
-      
+
+      // 总现金支出（所得税不在结账时扣：计入应付税金、下年初交纳）
+      const totalCashOut = maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment;
+
+      // 计算新的现金余额
+      const newCash = initialCash - shortSettlement.due + cashIncrease - totalCashOut;
+      if (newCash < 0) {
+        return { validationError: `本季度现金收支后将透支（缺口 ${-newCash}M），请先贴现应收账款或申请贷款` };
+      }
+      const cashChange = -shortSettlement.due + cashIncrease - totalCashOut;
+      const finalCash = newCash;
+      const finalCashChange = cashChange;
+
+      // 回填年末各项日志的现金余额（按发生顺序）
+      {
+        let running = initialCash - shortSettlement.due + cashIncrease;
+        yearEndLogs.forEach(log => {
+          running += log.cashChange;
+          log.newCash = running;
+        });
+      }
+
       // 添加现金流量历史记录
       const newCashFlowHistory = [
         ...state.state.operation.cashFlowHistory,
@@ -2156,20 +2270,26 @@ export const useEnterpriseStore = create<{
           description: `第${newYear}年第${newQuarter}季度现金余额`,
         },
       ];
-      
+
       // 创建详细的财务日志描述
       let detailedDescription = `第${newYear}年第${newQuarter}季度结束现金变动:`;
       if (cashIncrease > 0) {
         detailedDescription += ` 应收账款收现 ${cashIncrease}M`;
       }
+      if (shortSettlement.due > 0) {
+        detailedDescription += ` - 短贷还本付息 ${shortSettlement.due}M`;
+      }
       if (maintenanceCost > 0) {
         detailedDescription += ` - 设备维护费 ${maintenanceCost}M`;
       }
-      if (longTermInterest > 0) {
-        detailedDescription += ` - 长期贷款利息 ${longTermInterest}M`;
+      if (rentCost > 0) {
+        detailedDescription += ` - 厂房租金 ${rentCost}M`;
       }
-      if (shortTermInterest > 0) {
-        detailedDescription += ` - 短期贷款利息 ${shortTermInterest}M`;
+      if (longInterest > 0) {
+        detailedDescription += ` - 长期贷款利息 ${longInterest}M`;
+      }
+      if (longPrincipal > 0) {
+        detailedDescription += ` - 长期贷款还本 ${longPrincipal}M`;
       }
       if (adminCost > 0) {
         detailedDescription += ` - 行政管理费 ${adminCost}M`;
@@ -2177,10 +2297,7 @@ export const useEnterpriseStore = create<{
       if (rdInvestment > 0) {
         detailedDescription += ` - 研发投资 ${rdInvestment}M`;
       }
-      if (taxAmount > 0) {
-        detailedDescription += ` - 年度所得税 ${taxAmount}M`;
-      }
-      
+
       // 季度末日志记录 - 季度结束
       const quarterEndLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-end`,
@@ -2192,19 +2309,20 @@ export const useEnterpriseStore = create<{
         newCash: finalCash,
         operator: '系统自动',
       };
-      
-      // 年度结束日志记录
+
+      // 年度结束日志记录（结账，运行控制表：年末-6）
       let yearEndLog: FinancialLogRecord | null = null;
-      if (state.state.operation.currentQuarter === 4) {
+      if (isYearEnd) {
         yearEndLog = {
           id: `finlog-${Date.now()}-yearend`,
           year: newYear,
           quarter: newQuarter,
           timestamp: Date.now(),
-          description: `第${state.state.operation.currentYear}年结束，年度结账，年度所得税：${taxAmount}M`,
-          cashChange: -taxAmount,
+          description: `第${closingYear}年结束，年度结账`,
+          cashChange: 0,
           newCash: finalCash,
           operator: '系统自动',
+          stepId: 'e-6',
         };
       }
       
@@ -2243,15 +2361,20 @@ export const useEnterpriseStore = create<{
       });
       
       // 构建所有日志记录
-      const allLogs = [quarterStartLog, arLog, materialArrivalLog, productionLog, quarterEndLog];
+      const allLogs = [shortSettlementLog, quarterStartLog, arLog, materialArrivalLog, productionLog, quarterEndLog];
       // 只有当有研发投资时才添加研发投资日志
       if (rdLog) {
-        allLogs.splice(2, 0, rdLog); // 插入到arLog之后
+        allLogs.splice(3, 0, rdLog); // 插入到arLog之后
       }
+      allLogs.push(...yearEndLogs);
       if (yearEndLog) {
         allLogs.push(yearEndLog);
       }
-      
+
+      // 贷款台账与聚合展示字段联动
+      const longOutstanding = survivingLoans.filter(l => l.kind === 'long').reduce((s, l) => s + l.principal, 0);
+      const shortOutstanding = survivingLoans.filter(l => l.kind === 'short').reduce((s, l) => s + l.principal, 0);
+
       const updatedState = {
         ...state.state,
         operation: {
@@ -2267,6 +2390,15 @@ export const useEnterpriseStore = create<{
           ...state.state.finance,
           cash: finalCash,
           accountsReceivable: newAR,
+          loans: survivingLoans,
+          longTermLoan: {
+            ...state.state.finance.longTermLoan,
+            amount: longOutstanding,
+          },
+          shortTermLoan: {
+            ...state.state.finance.shortTermLoan,
+            amount: shortOutstanding,
+          },
           // 新年度重置年度净利润
           annualNetProfit: newYear > state.state.operation.currentYear ? 0 : state.state.finance.annualNetProfit,
         },
@@ -2309,6 +2441,7 @@ export const useEnterpriseStore = create<{
       
       return {
         state: updatedState,
+        validationError: null,
       };
     }),
 
@@ -2332,3 +2465,6 @@ export const useEnterpriseStore = create<{
       };
     }),
 }));
+
+// 导出全新初始状态深拷贝（测试用）
+export const createFreshState = (): EnterpriseState => JSON.parse(JSON.stringify(initialState));
