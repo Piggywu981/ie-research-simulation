@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord } from '../types/enterprise';
-import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd } from '../utils/rules';
+import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit } from '../utils/rules';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -291,6 +291,7 @@ export const useEnterpriseStore = create<{
   updateTaxesPayable: (amount: number) => void;
   applyLongTermLoan: () => void;
   applyShortTermLoan: () => void;
+  discountReceivable: (amount: number) => void;
   // 生产操作
   investProductR_D: (product: 'P1' | 'P2' | 'P3' | 'P4', amount: number) => void;
   updateProductionLineStatus: (lineId: string, status: EnterpriseState['production']['factories'][0]['productionLines'][0]['status']) => void;
@@ -645,6 +646,55 @@ export const useEnterpriseStore = create<{
               ...finance.shortTermLoan,
               amount: shortOutstanding + loanAmount,
             },
+            cash: newCash,
+          },
+          operation: {
+            ...operation,
+            financialLogs: [financialLog, ...operation.financialLogs],
+          },
+        },
+      };
+    }),
+
+  // 资金贴现：应收账款随时可贴现，金额为7的倍数，每7M付1M贴息（到账6M）
+  discountReceivable: (amount) =>
+    set((state) => {
+      const { finance, operation } = state.state;
+      const totalReceivable = finance.accountsReceivable.reduce((s, v) => s + v, 0);
+      if (!isValidDiscount(amount, totalReceivable)) {
+        return { validationError: `贴现金额须为7的倍数且不超过应收账款余额（当前${totalReceivable}M）` };
+      }
+      const { fee, cash: gain } = discountSplit(amount);
+      // 从最早账期开始扣减应收款
+      let remaining = amount;
+      const newAR = [...finance.accountsReceivable] as [number, number, number, number];
+      for (let i = 0; i < 4 && remaining > 0; i++) {
+        const deduct = Math.min(newAR[i], remaining);
+        newAR[i] -= deduct;
+        remaining -= deduct;
+      }
+      const newCash = finance.cash + gain;
+
+      // 记录财务日志（运行控制表：季度-11 更新应收账款/应收账款收现）
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-discount`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `贴现应收账款${amount}M：+${gain}M(贴息-${fee}M)`,
+        cashChange: gain,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'q-11',
+      };
+
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          finance: {
+            ...finance,
+            accountsReceivable: newAR,
             cash: newCash,
           },
           operation: {
