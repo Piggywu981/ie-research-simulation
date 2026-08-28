@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord } from '../types/enterprise';
+import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger } from '../types/enterprise';
 import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE } from '../utils/rules';
-import { AnnualLedger } from '../types/enterprise';
+import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS } from '../config/marketDemand';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -1512,145 +1512,148 @@ export const useEnterpriseStore = create<{
     }),
 
   // 投资开拓市场
-  investMarketDevelopment: (marketType: 'local' | 'regional' | 'domestic' | 'asian' | 'international') =>
+  // 投资市场开拓/维护（年末第4季度，每市场每年1M，可中断；已准入市场每年需投1M维持）
+  investMarketDevelopment: (marketType) =>
     set((state) => {
-      let investmentCost = 0;
-      const newMarkets = state.state.marketing.markets.map((market) => {
-        if (market.type === marketType && market.status === 'unavailable') {
-          // 计算投资金额（根据市场类型不同）
-          investmentCost = market.type === 'local' ? 1 : market.type === 'regional' ? 1 : market.type === 'domestic' ? 2 : market.type === 'asian' ? 3 : 4;
-          
-          return {
-            ...market,
-            status: 'developing' as const,
-            developmentProgress: 0, // 点击按钮后不立即增加进度，下一回合开始增加
-          };
-        }
-        return market;
-      });
-      
-      // 如果有投资成本，扣除现金并记录日志
-      let updatedState = {
-        ...state.state,
-        marketing: {
-          ...state.state.marketing,
-          markets: newMarkets,
-        },
-      };
-      
-      if (investmentCost > 0) {
-        const newCash = state.state.finance.cash - investmentCost;
-        
-        // 添加财务日志
-        const financialLog: FinancialLogRecord = {
-          id: `finlog-${Date.now()}-market-invest`,
-          year: state.state.operation.currentYear,
-          quarter: state.state.operation.currentQuarter,
-          timestamp: Date.now(),
-          description: `投资开拓${marketType}市场，花费${investmentCost}M`,
-          cashChange: -investmentCost,
-          newCash,
-          operator: '企业1管理者',
-        };
-        
-        updatedState = {
-          ...updatedState,
-          finance: {
-            ...updatedState.finance,
-            cash: newCash,
-          },
-          operation: {
-            ...updatedState.operation,
-            financialLogs: [financialLog, ...updatedState.operation.financialLogs],
-          },
-        };
-        
-        // 添加操作日志
-        const operationLog = {
-          id: `log-${Date.now()}`,
-          time: new Date().toLocaleString(),
-          operator: '企业1管理者',
-          action: '投资市场开发',
-          dataChange: `投资开拓${marketType}市场，花费${investmentCost}M，预计${marketType === 'local' || marketType === 'regional' ? '1' : marketType === 'domestic' ? '2' : marketType === 'asian' ? '3' : '4'}年完成`,
-        };
-        
-        updatedState.operation.operationLogs = [operationLog, ...updatedState.operation.operationLogs];
+      const { finance, operation, marketing } = state.state;
+      if (operation.currentQuarter !== 4) {
+        return { validationError: '市场开拓/维护投资是年末（第4季度）操作' };
       }
-      
+      const market = marketing.markets.find(m => m.type === marketType);
+      if (!market) {
+        return { validationError: '未找到该市场' };
+      }
+      if (market.investedThisYear) {
+        return { validationError: `${market.name}本年度已投资` };
+      }
+      if (finance.cash < 1) {
+        return { validationError: '现金不足：市场投资需1M' };
+      }
+      const requiredYears = MARKET_DEVELOP_YEARS[marketType];
+
+      const newMarkets = marketing.markets.map((m) => {
+        if (m.type !== marketType) return m;
+        const yearsInvested = m.yearsInvested + 1;
+        const gainedAccess = yearsInvested >= requiredYears;
+        return {
+          ...m,
+          yearsInvested,
+          investedThisYear: true,
+          developmentProgress: yearsInvested,
+          status: m.status === 'available' ? 'available' : gainedAccess ? 'available' as const : 'developing' as const,
+        };
+      });
+      const newCash = finance.cash - 1;
+      const marketName = market.name;
+
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-market-invest`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: market.status === 'available'
+          ? `-1M(${marketName}维护)`
+          : `-1M(${marketName}开拓，累计${market.yearsInvested + 1}/${requiredYears}年)`,
+        cashChange: -1,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'e-5',
+      };
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '投资市场开发',
+        dataChange: market.status === 'available'
+          ? `投入1M维持${marketName}市场准入`
+          : `投资开拓${marketName}市场1M（累计${market.yearsInvested + 1}/${requiredYears}年）${market.yearsInvested + 1 >= requiredYears ? '，已获得准入' : ''}`,
+      };
+
       return {
-        state: updatedState,
+        validationError: null,
+        state: {
+          ...state.state,
+          finance: { ...finance, cash: newCash },
+          marketing: { ...marketing, markets: newMarkets },
+          operation: {
+            ...operation,
+            annualLedger: { ...operation.annualLedger, marketDevFee: operation.annualLedger.marketDevFee + 1 },
+            financialLogs: [financialLog, ...operation.financialLogs],
+            operationLogs: [operationLog, ...operation.operationLogs],
+          },
+        },
       };
     }),
 
-  // 投资ISO认证
-  investISOCertification: (isoType: 'ISO9000' | 'ISO14000') =>
+  // 投资ISO认证（年末第4季度，每年各1M：ISO9000≥2年、ISO14000≥3年，可中断）
+  investISOCertification: (isoType) =>
     set((state) => {
-      let investmentCost = 0;
-      const newISOCertifications = state.state.marketing.isoCertifications.map((iso) => {
-        if (iso.type === isoType && iso.status === 'uncertified') {
-          // 计算投资金额（根据认证类型不同）
-          investmentCost = iso.type === 'ISO9000' ? 3 : 4;
-          
-          return {
-            ...iso,
-            status: 'certifying' as const,
-            certificationProgress: 0, // 点击按钮后不立即增加进度，下一回合开始增加
-            totalCost: investmentCost,
-          };
-        }
-        return iso;
-      });
-      
-      // 如果有投资成本，扣除现金并记录日志
-      let updatedState = {
-        ...state.state,
-        marketing: {
-          ...state.state.marketing,
-          isoCertifications: newISOCertifications,
-        },
-      };
-      
-      if (investmentCost > 0) {
-        const newCash = state.state.finance.cash - investmentCost;
-        
-        // 添加财务日志
-        const financialLog: FinancialLogRecord = {
-          id: `finlog-${Date.now()}-iso-invest`,
-          year: state.state.operation.currentYear,
-          quarter: state.state.operation.currentQuarter,
-          timestamp: Date.now(),
-          description: `投资${isoType}认证，花费${investmentCost}M`,
-          cashChange: -investmentCost,
-          newCash,
-          operator: '企业1管理者',
-        };
-        
-        updatedState = {
-          ...updatedState,
-          finance: {
-            ...updatedState.finance,
-            cash: newCash,
-          },
-          operation: {
-            ...updatedState.operation,
-            financialLogs: [financialLog, ...updatedState.operation.financialLogs],
-          },
-        };
-        
-        // 添加操作日志
-        const operationLog = {
-          id: `log-${Date.now()}`,
-          time: new Date().toLocaleString(),
-          operator: '企业1管理者',
-          action: '投资ISO认证',
-          dataChange: `投资${isoType}认证，花费${investmentCost}M，预计${isoType === 'ISO9000' ? '3' : '4'}季度完成`,
-        };
-        
-        updatedState.operation.operationLogs = [operationLog, ...updatedState.operation.operationLogs];
+      const { finance, operation, marketing } = state.state;
+      if (operation.currentQuarter !== 4) {
+        return { validationError: 'ISO认证投资是年末（第4季度）操作' };
       }
-      
+      const iso = marketing.isoCertifications.find(i => i.type === isoType);
+      if (!iso) {
+        return { validationError: '未找到该认证' };
+      }
+      if (iso.status === 'certified') {
+        return { validationError: `${isoType}已认证完成` };
+      }
+      if (iso.investedThisYear) {
+        return { validationError: `${isoType}本年度已投资` };
+      }
+      if (finance.cash < 1) {
+        return { validationError: '现金不足：ISO认证投资需1M' };
+      }
+      const requiredYears = ISO_REQUIRED_YEARS[isoType];
+
+      const newISOCertifications = marketing.isoCertifications.map((i) => {
+        if (i.type !== isoType) return i;
+        const yearsInvested = i.yearsInvested + 1;
+        const certified = yearsInvested >= requiredYears;
+        return {
+          ...i,
+          yearsInvested,
+          investedThisYear: true,
+          certificationProgress: yearsInvested,
+          status: certified ? 'certified' as const : 'certifying' as const,
+          totalCost: i.totalCost + 1,
+        };
+      });
+      const newCash = finance.cash - 1;
+
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-iso-invest`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `-1M(${isoType}认证，累计${iso.yearsInvested + 1}/${requiredYears}年)`,
+        cashChange: -1,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'e-5',
+      };
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '投资ISO认证',
+        dataChange: `投资${isoType}认证1M（累计${iso.yearsInvested + 1}/${requiredYears}年）${iso.yearsInvested + 1 >= requiredYears ? '，已获得资格证' : ''}`,
+      };
+
       return {
-        state: updatedState,
+        validationError: null,
+        state: {
+          ...state.state,
+          finance: { ...finance, cash: newCash },
+          marketing: { ...marketing, isoCertifications: newISOCertifications },
+          operation: {
+            ...operation,
+            annualLedger: { ...operation.annualLedger, isoFee: operation.annualLedger.isoFee + 1 },
+            financialLogs: [financialLog, ...operation.financialLogs],
+            operationLogs: [operationLog, ...operation.operationLogs],
+          },
+        },
       };
     }),
 
@@ -2399,39 +2402,43 @@ export const useEnterpriseStore = create<{
       // 年度结束日志记录（结账日志已在上方年末序列生成）
       let yearEndLog: FinancialLogRecord | null = null;
       
-      // 更新市场开发进度 - 按照季度跟进
+      // 年末市场/ISO 年度结算：未维持的已准入市场丧失资格（第1年豁免），并复位本年度投资标记
+      let abandonedMarkets: string[] = [];
       const updatedMarkets = state.state.marketing.markets.map(market => {
-        if (market.status === 'developing') {
-          // 计算新进度（每季度+1）
-          const newProgress = market.developmentProgress + 1;
-          // 将年转换为季度：1年=4季度
-          const requiredProgress = market.type === 'local' || market.type === 'regional' ? 4 : 
-                                  market.type === 'domestic' ? 8 : 
-                                  market.type === 'asian' ? 12 : 16;
-          
-          return {
-            ...market,
-            developmentProgress: newProgress,
-            status: newProgress >= requiredProgress ? ('available' as const) : ('developing' as const)
-          };
+        if (isYearEnd) {
+          if (market.status === 'available' && !market.investedThisYear && closingYear >= 2) {
+            abandonedMarkets.push(market.name);
+            return { ...market, status: 'unavailable' as const, investedThisYear: false };
+          }
+          return { ...market, investedThisYear: false };
         }
         return market;
       });
-      
-      // 更新ISO认证进度
-      const updatedISOCertifications = state.state.marketing.isoCertifications.map(iso => {
-        if (iso.status === 'certifying') {
-          const newProgress = iso.certificationProgress + 1;
-          const requiredProgress = iso.type === 'ISO9000' ? 3 : 4;
-          
-          return {
-            ...iso,
-            certificationProgress: newProgress,
-            status: newProgress >= requiredProgress ? ('certified' as const) : ('certifying' as const)
-          };
-        }
-        return iso;
-      });
+      if (abandonedMarkets.length > 0) {
+        newOperationLogs.unshift({
+          id: `log-${Date.now()}-abandon`,
+          time: new Date().toLocaleString(),
+          operator: '系统自动',
+          action: '市场丧失准入',
+          dataChange: `${abandonedMarkets.join('、')}因本年度未投入1M维护，丧失市场准入`,
+        });
+        yearEndLogs.push({
+          id: `finlog-${Date.now()}-abandon`,
+          year: newYear,
+          quarter: newQuarter,
+          timestamp: Date.now(),
+          description: `市场维护警告：${abandonedMarkets.join('、')}未维持，丧失准入`,
+          cashChange: 0,
+          newCash: 0,
+          operator: '系统自动',
+          stepId: 'e-5',
+        });
+      }
+
+      // ISO 认证：年度投资模型下无自动推进，仅复位本年度投资标记
+      const updatedISOCertifications = state.state.marketing.isoCertifications.map(iso =>
+        isYearEnd ? { ...iso, investedThisYear: false } : iso
+      );
       
       // 构建所有日志记录
       const allLogs = [shortSettlementLog, quarterStartLog, arLog, materialArrivalLog, ...startProductionLogs, productionLog, quarterEndLog];
