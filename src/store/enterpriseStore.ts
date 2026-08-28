@@ -1492,6 +1492,21 @@ export const useEnterpriseStore = create<{
           : '尚未投放广告，未解锁可选订单（每1M广告解锁2张）',
       };
 
+      // 订货会结果记入财务日志（运行控制表：年初-2，非现金事件）
+      const meetingLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-order-meeting`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: adAmount > 0
+          ? `订货会：生成${newOrders.length}张可选订单（广告${adAmount}M解锁）`
+          : '订货会：未投放广告，未解锁可选订单',
+        cashChange: 0,
+        newCash: state.state.finance.cash,
+        operator: '企业1管理者',
+        stepId: 'b-2',
+      };
+
       return {
         validationError: null,
         state: {
@@ -1502,6 +1517,7 @@ export const useEnterpriseStore = create<{
           },
           operation: {
             ...operation,
+            financialLogs: [meetingLog, ...operation.financialLogs],
             operationLogs: [operationLog, ...operation.operationLogs],
           },
         },

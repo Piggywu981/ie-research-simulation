@@ -70,6 +70,8 @@ export function buildYearControlTable(
   saves: SaveFile[],
 ): string[][] {
   const yearLogs = logs.filter((l) => l.year === year);
+  // 该年是否已运营过（有任何日志）：用于年初必经流程行的勾选
+  const yearPlayed = yearLogs.length > 0;
   const byStepQuarter = (stepId: string, quarter: number) =>
     yearLogs.filter((l) => l.stepId === stepId && l.quarter === quarter);
 
@@ -82,7 +84,14 @@ export function buildYearControlTable(
     const row: string[] = [String(index + 1), step.name, '', '', '', ''];
     if (step.phase !== '季度') {
       // 年初行数据在Q1；年末行归属收尾年度第4季度
-      row[2] = joinLogs(byStepQuarter(step.id, step.phase === '年末' ? 4 : 1));
+      if (step.id === 'b-1' || step.id === 'b-3') {
+        // 规划会议/年度计划为年初必经流程：已运营年份固定勾选
+        row[2] = yearPlayed ? '✓' : '';
+      } else {
+        row[2] = joinLogs(byStepQuarter(step.id, step.phase === '年末' ? 4 : 1));
+      }
+      // 无数据也不留空白格
+      if (!row[2]) row[2] = '—';
       return row;
     }
     for (let q = 1; q <= 4; q++) {
@@ -133,6 +142,8 @@ export function buildYearControlTable(
           row[2 + q - 1] = cashLogs.length > 0 ? joinLogs(cashLogs) : cellLogs.length > 0 ? '✓' : '';
         }
       }
+      // 无事件也不留空白格（未启用/未触发步骤统一填 —）
+      if (!row[2 + q - 1]) row[2 + q - 1] = '—';
     }
     return row;
   });

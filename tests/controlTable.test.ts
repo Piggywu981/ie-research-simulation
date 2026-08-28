@@ -103,6 +103,48 @@ describe('单元格填充', () => {
   });
 });
 
+describe('空白行/空白格填充', () => {
+  it('任何行都不完全空白（无数据格填 —）', () => {
+    const table = rows(1, [], []);
+    table.forEach((r) => {
+      expect(r.slice(2).some(cell => cell !== '')).toBe(true);
+    });
+  });
+
+  it('季度行：无事件的四个季度格全部填 —', () => {
+    const table = rows(1, [], []);
+    const disabledRows = table.filter(r => r[1] === '（本项目未启用）');
+    expect(disabledRows).toHaveLength(2);
+    disabledRows.forEach(r => {
+      expect(r.slice(2)).toEqual(['—', '—', '—', '—']);
+    });
+    expect(table.find(r => r[1] === '出售厂房')!.slice(2)).toEqual(['—', '—', '—', '—']);
+    expect(table.find(r => r[1].includes('更新应付账款'))!.slice(2)).toEqual(['—', '—', '—', '—']);
+  });
+
+  it('已运营年份：年初规划/计划行固定勾选；未运营年份填 —', () => {
+    const empty = rows(1, [], []);
+    expect(empty.find(r => r[1] === '新年度规划会议')![2]).toBe('—');
+    expect(empty.find(r => r[1] === '制定新年度计划')![2]).toBe('—');
+
+    const logs = [mkLog({ year: 1, quarter: 1, stepId: 'q-16', description: '行政', cashChange: -1 })];
+    const played = rows(1, logs, []);
+    expect(played.find(r => r[1] === '新年度规划会议')![2]).toBe('✓');
+    expect(played.find(r => r[1] === '制定新年度计划')![2]).toBe('✓');
+  });
+
+  it('有日志的步骤行仍显示真实数据，不被 — 覆盖', () => {
+    const logs = [
+      mkLog({ year: 1, quarter: 1, stepId: 'b-4', description: '支付应付税：-所得税1M', cashChange: -1 }),
+      mkLog({ year: 1, quarter: 3, stepId: 'q-3', description: '-20M(短期贷款)', cashChange: -20 }),
+    ];
+    const table = rows(1, logs, []);
+    expect(table.find(r => r[1] === '支付应付税')![2]).toBe('支付应付税：-所得税1M');
+    expect(table.find(r => r[1].includes('申请短期贷款'))![4]).toBe('-20M(短期贷款)');
+    expect(table.find(r => r[1].includes('申请短期贷款'))![2]).toBe('—');
+  });
+});
+
 describe('CSV 导出', () => {
   it('首行为标题跨列占位，第二行为表头', () => {
     const csv = toCSV(rows(1, [], []), 1);
@@ -132,10 +174,16 @@ describe('store 端到端：第1年控制表', () => {
     const table = buildYearControlTable(1, logs, saves);
     const adRow = table.find(r => r[1].includes('其他现金收支'))!;
     expect(adRow[2]).toContain('广告费');
+    const b2Row = table.find(r => r[1].includes('参加订货会'))!;
+    expect(b2Row[2]).toContain('订货会');
     const q19 = table.find(r => r[1].includes('出库（现金支出）'))!;
     expect(q19[2]).toContain('M');
     const csv = toCSV(table, 1);
     expect(csv).toContain('第1年运行控制表');
+    // 导出表中不允许出现完全空白的行
+    csv.split('\n').slice(2).forEach(line => {
+      expect(line.replace(/,/g, '')).not.toBe('');
+    });
   });
 });
 
