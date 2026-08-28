@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord } from '../types/enterprise';
-import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement } from '../utils/rules';
+import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE } from '../utils/rules';
 import { AnnualLedger } from '../types/enterprise';
 
 // 全局状态，用于跟踪重置次数
@@ -295,13 +295,13 @@ export const useEnterpriseStore = create<{
   discountReceivable: (amount: number) => void;
   payTaxes: () => void;
   // 生产操作
-  investProductR_D: (product: 'P1' | 'P2' | 'P3' | 'P4', amount: number) => void;
+  investProductR_D: (product: 'P2', amount?: number) => void;
   updateProductionLineStatus: (lineId: string, status: EnterpriseState['production']['factories'][0]['productionLines'][0]['status']) => void;
-  addProductionLine: (factoryId: string, lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible', product: 'P1' | 'P2' | 'P3' | 'P4') => void;
+  addProductionLine: (factoryId: string, lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible', product: 'P1' | 'P2') => void;
   removeProductionLine: (factoryId: string, lineId: string) => void;
   cancelProduction: (lineId: string) => void;
   startProduction: (lineId: string) => void;
-  convertProductionLine: (lineId: string, newProduct: 'P1' | 'P2' | 'P3' | 'P4') => void;
+  convertProductionLine: (lineId: string, newProduct: 'P1' | 'P2') => void;
   getProductionLineRemaining: (lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible') => number;
   // 物流操作
   placeRawMaterialOrder: (materialType: 'R1' | 'R2' | 'R3' | 'R4', quantity: number) => void;
@@ -754,48 +754,52 @@ export const useEnterpriseStore = create<{
     }),
   
   // 生产操作
+  // 启动 P2 产品研发（6Q 分期：启动付首期1M，此后每季度自动续投1M，现金不足自动中断）
   investProductR_D: (product, amount) =>
     set((state) => {
-      if (product === 'P1') {
-        return state;
+      if (product !== 'P2') {
+        return { validationError: '本期运营仅开放 P2 产品研发' };
       }
-      
-      // 检查是否已经投资
-      const currentRD = state.state.production.productRD[product];
-      if (currentRD.totalInvestment > 0) {
-        return state; // 已投资，不允许重复投资
+      const p2 = state.state.production.productRD.P2;
+      if (p2.status === 'active') {
+        return { validationError: 'P2 研发已在进行中' };
       }
-      
-      // 一次性投资6M，设置进度为0，等待6个季度后完成
-      const newRD = {
-        ...state.state.production.productRD,
-        [product]: {
-          ...state.state.production.productRD[product],
-          progress: 0, // 投资后进度重置为0，等待6个季度自动完成
-          totalInvestment: state.state.production.productRD[product].totalInvestment + amount,
-          completed: false, // 投资后不立即完成，等待6个季度
-        },
-      };
-      
-      // 更新现金并记录财务日志
-      const investmentCost = -amount;
-      const newCash = state.state.finance.cash + investmentCost;
-      
-      // 添加操作日志
+      if (p2.completed) {
+        return { validationError: 'P2 研发已完成，已取得生产资格' };
+      }
+      const installment = amount && amount > 0 ? Math.min(amount, 6 - p2.paidQuarters) : 1;
+      if (state.state.finance.cash < installment) {
+        return { validationError: `现金不足：研发启动需支付 ${installment}M` };
+      }
+      const newCash = state.state.finance.cash - installment;
+      const newPaid = p2.paidQuarters + installment;
+      const completed = newPaid >= 6;
+
       const operationLog = {
         id: `log-${Date.now()}`,
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
         action: '产品研发投资',
-        dataChange: `投资${product}产品研发6M，预计6个季度后完成`,
+        dataChange: `P2研发${p2.status === 'idle' ? '启动' : '续投'}：支付${installment}M（累计${newPaid}/6季）`,
       };
-      
+
       return {
+        validationError: null,
         state: {
           ...state.state,
           production: {
             ...state.state.production,
-            productRD: newRD,
+            productRD: {
+              ...state.state.production.productRD,
+              P2: {
+                ...p2,
+                status: completed ? 'completed' : 'active',
+                completed: p2.completed || completed,
+                progress: Math.min(newPaid, 6),
+                paidQuarters: newPaid,
+                totalInvestment: p2.totalInvestment + installment,
+              },
+            },
           },
           finance: {
             ...state.state.finance,
@@ -803,6 +807,10 @@ export const useEnterpriseStore = create<{
           },
           operation: {
             ...state.state.operation,
+            annualLedger: {
+              ...state.state.operation.annualLedger,
+              rdFee: state.state.operation.annualLedger.rdFee + installment,
+            },
             operationLogs: [operationLog, ...state.state.operation.operationLogs],
             financialLogs: [
               {
@@ -810,10 +818,11 @@ export const useEnterpriseStore = create<{
                 year: state.state.operation.currentYear,
                 quarter: state.state.operation.currentQuarter,
                 timestamp: Date.now(),
-                description: `投资${product}产品研发，一次性花费${amount}M，预计6个季度后完成`,
-                cashChange: investmentCost,
+                description: `产品研发投资：-${installment}M(P2，累计${newPaid}/6季)`,
+                cashChange: -installment,
                 newCash,
                 operator: '企业1管理者',
+                stepId: 'q-15',
               },
               ...state.state.operation.financialLogs
             ],
@@ -1052,122 +1061,88 @@ export const useEnterpriseStore = create<{
       };
     }),
 
-  // 开始生产
+  // 开始生产：按产品结构投料并支付加工费1M（运行控制表：季度-10）
   startProduction: (lineId) =>
     set((state) => {
-      // 找到包含该生产线的厂房和生产线
-      let updatedFactories = [...state.state.production.factories];
-      let lineName = '';
-      let productName = '';
-      let productType: 'P1' | 'P2' | 'P3' | 'P4' | null = null;
-      let canProduce = true;
-      let requiredMaterials = {} as Record<string, number>;
-
-      // 1. 首先找到生产线，确定需要的原材料
-      updatedFactories.forEach(factory => {
-        factory.productionLines.forEach(line => {
-          if (line.id === lineId && line.product) {
-            productType = line.product;
-            lineName = line.name;
-            productName = line.product;
-            
-            // 计算该产品需要的原材料
-            if (productType === 'P1') {
-              requiredMaterials = { R1: 1 };
-            } else if (productType === 'P2') {
-              requiredMaterials = { R1: 1, R2: 1 };
-            } else if (productType === 'P3') {
-              requiredMaterials = { R2: 2, R3: 1 };
-            } else if (productType === 'P4') {
-              requiredMaterials = { R2: 1, R3: 1, R4: 2 };
-            }
-          }
-        });
-      });
-
-      // 2. 检查原材料是否足够
-      if (productType) {
-        const currentRawMaterials = state.state.logistics.rawMaterials;
-        for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
-          const material = currentRawMaterials.find(m => m.type === materialType);
-          if (!material || material.quantity < requiredQuantity) {
-            canProduce = false;
-            break;
-          }
+      const target = state.state.production.factories
+        .flatMap(f => f.productionLines)
+        .find(line => line.id === lineId);
+      if (!target) {
+        return { validationError: '未找到该生产线' };
+      }
+      if (!target.product) {
+        return { validationError: '该生产线未设置生产产品' };
+      }
+      if (target.inProgressProducts > 0) {
+        return { validationError: `${target.name}已在生产中` };
+      }
+      const bom = PRODUCT_BOM[target.product];
+      const newRawMaterials = [...state.state.logistics.rawMaterials];
+      for (const [materialType, requiredQuantity] of Object.entries(bom)) {
+        const material = newRawMaterials.find(m => m.type === materialType);
+        if (!material || material.quantity < (requiredQuantity ?? 0)) {
+          return { validationError: `原材料不足：需要${requiredQuantity}个${materialType}` };
         }
       }
+      if (state.state.finance.cash < PROCESS_FEE) {
+        return { validationError: `现金不足：开始生产需支付加工费${PROCESS_FEE}M` };
+      }
 
-      // 3. 如果原材料足够，开始生产（设置在制品数量）
-      // 注意：原材料消耗在生产完成时（nextQuarter函数）处理，而不是在这里
-      if (canProduce && productType) {
-        // 更新生产线状态
-        updatedFactories = updatedFactories.map(factory => {
-          const updatedLines = factory.productionLines.map(line => {
-            if (line.id === lineId) {
-              // 重新开始生产，在制品数量与生产线类型相关
-              const productionQuantity = line.type === 'automatic' ? 1 : line.type === 'flexible' ? 1 : line.type === 'semi-automatic' ? 1 : 1;
-              return {
-                ...line,
-                status: 'running' as const, // 明确类型化为生产线状态联合类型
-                inProgressProducts: productionQuantity,
-              };
-            }
-            return line;
-          });
-          return {
-            ...factory,
-            productionLines: updatedLines,
-          };
-        });
+      // 投料：扣减原材料
+      for (const [materialType, requiredQuantity] of Object.entries(bom)) {
+        const idx = newRawMaterials.findIndex(m => m.type === materialType);
+        newRawMaterials[idx] = { ...newRawMaterials[idx], quantity: newRawMaterials[idx].quantity - (requiredQuantity ?? 0) };
+      }
+      const newCash = state.state.finance.cash - PROCESS_FEE;
 
-        const updatedState = {
+      const updatedFactories = state.state.production.factories.map(factory => ({
+        ...factory,
+        productionLines: factory.productionLines.map(line =>
+          line.id === lineId
+            ? { ...line, status: 'running' as const, inProgressProducts: 1 }
+            : line
+        ),
+      }));
+
+      // 记录财务日志（运行控制表：季度-10）
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-start`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `开始下一批生产：-加工费${PROCESS_FEE}M(${target.product},${target.name})`,
+        cashChange: -PROCESS_FEE,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'q-10',
+      };
+
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '开始生产',
+        dataChange: `${target.name}开始生产${target.product}，投料${Object.entries(bom).map(([type, qty]) => `${qty}${type}`).join('+')}，支付加工费${PROCESS_FEE}M`,
+      };
+
+      return {
+        validationError: null,
+        state: {
           ...state.state,
-          production: {
-            ...state.state.production,
-            factories: updatedFactories,
-          },
-        };
-
-        // 添加操作日志
-        const newLog = {
-          id: `log-${Date.now()}`,
-          time: new Date().toLocaleString(),
-          operator: '企业1管理者',
-          action: '开始生产',
-          dataChange: `开始了${lineName}的生产，产品：${productName}，需要原材料：${Object.entries(requiredMaterials).map(([type, qty]) => `${qty}${type}`).join('+')}`,
-        };
-
-        updatedState.operation.operationLogs = [newLog, ...updatedState.operation.operationLogs];
-
-        return {
-          state: updatedState,
-        };
-      } else {
-        // 原材料不足，添加操作日志但不开始生产
-        const newLog = {
-          id: `log-${Date.now()}`,
-          time: new Date().toLocaleString(),
-          operator: '企业1管理者',
-          action: '开始生产',
-          dataChange: `尝试开始${lineName}的生产，产品：${productName}，但原材料不足，无法生产`,
-        };
-
-        const updatedState = {
-          ...state.state,
+          finance: { ...state.state.finance, cash: newCash },
+          production: { ...state.state.production, factories: updatedFactories },
+          logistics: { ...state.state.logistics, rawMaterials: newRawMaterials },
           operation: {
             ...state.state.operation,
-            operationLogs: [newLog, ...state.state.operation.operationLogs],
+            operationLogs: [operationLog, ...state.state.operation.operationLogs],
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
           },
-        };
-
-        return {
-          state: updatedState,
-        };
-      }
+        },
+      };
     }),
 
   // 生产线转产
-  convertProductionLine: (lineId, newProduct: 'P1' | 'P2' | 'P3' | 'P4') =>
+  convertProductionLine: (lineId, newProduct: 'P1' | 'P2') =>
     set((state) => {
       // 找到包含该生产线的厂房
       let updatedFactories = [...state.state.production.factories];
@@ -1873,6 +1848,8 @@ export const useEnterpriseStore = create<{
 
       // 增加现金（到期的应收账款）
       const cashIncrease = state.state.finance.accountsReceivable[0];
+      // 本季度研发投资额（研发处理位于生产段之后，此处提前声明）
+      let rdInvestment = 0;
 
       // 4. 更新应收账款/应收款收现日志
       const arLog: FinancialLogRecord = {
@@ -1886,45 +1863,7 @@ export const useEnterpriseStore = create<{
         operator: '系统自动',
         stepId: 'q-11',
       };
-      
-      // 5. 更新生产研发进度（仅 P2 开放研发）
-      const updatedProductRD = { ...state.state.production.productRD };
-      let rdInvestment = 0;
-      // 记录研发完成的产品
-      const completedProducts: string[] = [];
-      {
-        const p2 = updatedProductRD.P2;
-        // 只对已经投资但未完成的 P2 更新进度
-        if (!p2.completed && p2.totalInvestment > 0) {
-          // 每个季度研发进度+1
-          const newProgress = p2.progress + 1;
-          const requiredProgress = 6;
-          updatedProductRD.P2 = {
-            ...p2,
-            progress: Math.min(newProgress, requiredProgress),
-            completed: newProgress >= requiredProgress,
-            status: newProgress >= requiredProgress ? 'completed' : p2.status,
-            paidQuarters: p2.paidQuarters,
-          };
-          // 记录研发完成的产品
-          if (newProgress >= requiredProgress) {
-            completedProducts.push('P2');
-          }
-        }
-      }
-      
-      // 产品研发投资日志 - 只有当有研发投资时才记录
-      const rdLog: FinancialLogRecord | null = rdInvestment > 0 ? {
-        id: `finlog-${Date.now()}-rd`,
-        year: newYear,
-        quarter: newQuarter,
-        timestamp: Date.now(),
-        description: `产品研发投资，投资金额：${rdInvestment}M`,
-        cashChange: -rdInvestment,
-        newCash: initialCash + cashIncrease - rdInvestment,
-        operator: '系统自动',
-      } : null;
-      
+
       // 6. 处理原材料订单到货
       let newRawMaterials = [...state.state.logistics.rawMaterials];
       const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => {
@@ -1978,215 +1917,137 @@ export const useEnterpriseStore = create<{
       const newOperationLogs = [...state.state.operation.operationLogs];
       
       let totalProduced = 0;
+      // 自动开工的加工费合计（现金支出，运行控制表：季度-10）
+      let autoProcessFees = 0;
+      const startProductionLogs: FinancialLogRecord[] = [];
       // 用于记录因原材料不足而停产的生产线
       const stoppedLines: {lineName: string, product: string, requiredMaterials: string[]}[] = [];
-      
-      // 8. 原材料到货后，恢复停产的生产线
-      // 遍历所有生产线，检查stopped状态的生产线是否可以恢复生产
+
+      // 投料辅助：检查 BOM 原料是否充足 / 扣减原料（开工时投料并付加工费1M）
+      const bomSufficient = (product: Exclude<ProductionLine['product'], null>) => {
+        const bom = PRODUCT_BOM[product];
+        return Object.entries(bom).every(([materialType, requiredQuantity]) => {
+          const material = newRawMaterials.find(m => m.type === materialType);
+          return material && material.quantity >= (requiredQuantity ?? 0);
+        });
+      };
+      const deductBom = (product: Exclude<ProductionLine['product'], null>) => {
+        const bom = PRODUCT_BOM[product];
+        for (const [materialType, requiredQuantity] of Object.entries(bom)) {
+          const idx = newRawMaterials.findIndex(m => m.type === materialType);
+          newRawMaterials[idx] = { ...newRawMaterials[idx], quantity: newRawMaterials[idx].quantity - (requiredQuantity ?? 0) };
+        }
+      };
+      const startLineProduction = (line: ProductionLine, source: 'auto' | 'resume') => {
+        if (!line.product || !bomSufficient(line.product)) return false;
+        if (state.state.finance.cash - shortSettlement.due + cashIncrease - rdInvestment - autoProcessFees - PROCESS_FEE < 0) return false;
+        deductBom(line.product);
+        autoProcessFees += PROCESS_FEE;
+        startProductionLogs.push({
+          id: `finlog-${Date.now()}-start-${Math.random().toString(36).slice(2, 7)}`,
+          year: newYear,
+          quarter: newQuarter,
+          timestamp: Date.now(),
+          description: `开始下一批生产：-加工费${PROCESS_FEE}M(${line.product},${line.name})`,
+          cashChange: -PROCESS_FEE,
+          newCash: 0,
+          operator: source === 'auto' ? '系统自动' : '系统自动',
+          stepId: 'q-10',
+        });
+        return true;
+      };
+
+      // 8. 原材料到货后，恢复停产的生产线（重新投料并支付加工费）
       newFactories.forEach((factory, factoryIndex) => {
         factory.productionLines.forEach((line, lineIndex) => {
-          // 只处理停产状态的生产线
-          if (line.status === 'stopped' && line.product) {
-            // 计算该产品需要的原材料
-            const requiredMaterials: Record<string, number> = {};
-            if (line.product === 'P1') {
-              requiredMaterials['R1'] = 1;
-            } else if (line.product === 'P2') {
-              requiredMaterials['R1'] = 1;
-              requiredMaterials['R2'] = 1;
-            } else if (line.product === 'P3') {
-              requiredMaterials['R2'] = 2;
-              requiredMaterials['R3'] = 1;
-            } else if (line.product === 'P4') {
-              requiredMaterials['R2'] = 1;
-              requiredMaterials['R3'] = 1;
-              requiredMaterials['R4'] = 2;
-            }
-            
-            // 检查所有需要的原材料是否都已充足
-            let allMaterialsSufficient = true;
-            for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
-              const material = newRawMaterials.find(m => m.type === materialType);
-              if (!material || material.quantity < requiredQuantity) {
-                allMaterialsSufficient = false;
-                break;
-              }
-            }
-            
-            // 如果所有所需原材料都已充足，将生产线状态改为running
-            if (allMaterialsSufficient) {
-              // 更新生产线状态
-              newFactories[factoryIndex].productionLines[lineIndex] = {
-                ...line,
-                status: 'running',
-                inProgressProducts: line.type === 'automatic' ? 1 : line.type === 'flexible' ? 1 : line.type === 'semi-automatic' ? 1 : 1,
-              };
-              
-              // 记录恢复生产日志
-              const resumeLog = {
-                id: `log-${Date.now()}-resume-${Math.random().toString(36).substr(2, 9)}`,
-                time: new Date().toLocaleString(),
-                operator: '系统自动',
-                action: '生产线恢复生产',
-                dataChange: `生产线${line.name}因生产${line.product}所需原材料已充足，自动恢复生产`,
-              };
-              newOperationLogs.unshift(resumeLog);
-            }
+          if (line.status === 'stopped' && line.product && startLineProduction(line, 'resume')) {
+            newFactories[factoryIndex].productionLines[lineIndex] = {
+              ...line,
+              status: 'running',
+              inProgressProducts: 1,
+            };
+            const resumeLog = {
+              id: `log-${Date.now()}-resume-${Math.random().toString(36).substr(2, 9)}`,
+              time: new Date().toLocaleString(),
+              operator: '系统自动',
+              action: '生产线恢复生产',
+              dataChange: `生产线${line.name}原料与资金充足，重新投料恢复生产${line.product}`,
+            };
+            newOperationLogs.unshift(resumeLog);
           }
         });
       });
-      
+
       newFactories.forEach((factory, factoryIndex) => {
         factory.productionLines.forEach((line, lineIndex) => {
-          // 处理安装中的生产线
+          // 处理安装中的生产线（安装完成的下一季度才开工，此处仅转运行态）
           if (line.status === 'installing') {
             const newInstallationProgress = line.installationProgress + 1;
             if (newInstallationProgress >= line.installationPeriod) {
-              // 安装完成，状态变为运行中
               newFactories[factoryIndex].productionLines[lineIndex] = {
                 ...line,
                 status: 'running',
                 installationProgress: newInstallationProgress,
-                inProgressProducts: 1, // 开始生产，添加在制品
+                inProgressProducts: 0, // 待下一季度投料开工
               };
             } else {
-              // 继续安装，更新进度
               newFactories[factoryIndex].productionLines[lineIndex] = {
                 ...line,
                 installationProgress: newInstallationProgress,
               };
             }
           }
-          // 处理转产中的生产线
+          // 处理转产中的生产线（转产完成后的下一季度才能生产新产品）
           else if (line.status === 'converting') {
             const newConversionProgress = line.conversionProgress + 1;
             if (newConversionProgress >= line.conversionPeriod) {
-              // 转产完成，状态变为运行中
               newFactories[factoryIndex].productionLines[lineIndex] = {
                 ...line,
                 status: 'running',
                 conversionProgress: newConversionProgress,
-                inProgressProducts: 1, // 开始生产，添加在制品
+                inProgressProducts: 0, // 待下一季度投料开工
               };
             } else {
-              // 继续转产，更新进度
               newFactories[factoryIndex].productionLines[lineIndex] = {
                 ...line,
                 conversionProgress: newConversionProgress,
               };
             }
           }
-          // 处理运行中的生产线
+          // 处理运行中的生产线：先完工入库（原料与加工费已在开工时支付），随后投料开始下一批
           else if (line.status === 'running') {
             // 计算是否完成生产：根据生产线类型和生产周期
-            let shouldProduce = false;
-            
+            let shouldComplete = false;
             if (line.type === 'automatic' || line.type === 'flexible') {
-              // 自动化和柔性生产线每季度完成1个产品
-              shouldProduce = true;
+              // 全自动/柔性线每季度完成1个产品
+              shouldComplete = true;
             } else if (line.type === 'semi-automatic') {
-              // 半自动生产线需要2个季度完成1个产品
-              shouldProduce = newQuarter % 2 === 0;
+              // 半自动线2个季度完成1个产品
+              shouldComplete = newQuarter % 2 === 0;
             } else if (line.type === 'manual') {
-              // 手工生产线需要3个季度完成1个产品
-              shouldProduce = newQuarter % 3 === 0;
+              // 手工线3个季度完成1个产品
+              shouldComplete = newQuarter % 3 === 0;
             }
-            
-            if (shouldProduce && line.inProgressProducts > 0) {
-              // 计算该产品需要的原材料
-              const requiredMaterials: Record<string, number> = {};
-              if (line.product === 'P1') {
-                requiredMaterials['R1'] = 1;
-              } else if (line.product === 'P2') {
-                requiredMaterials['R1'] = 1;
-                requiredMaterials['R2'] = 1;
-              } else if (line.product === 'P3') {
-                requiredMaterials['R2'] = 2;
-                requiredMaterials['R3'] = 1;
-              } else if (line.product === 'P4') {
-                requiredMaterials['R2'] = 1;
-                requiredMaterials['R3'] = 1;
-                requiredMaterials['R4'] = 2;
-              }
-              
-              // 检查原材料是否足够
-              let canProduce = true;
-              for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
-                const material = newRawMaterials.find(m => m.type === materialType);
-                if (!material || material.quantity < requiredQuantity) {
-                  canProduce = false;
-                  break;
-                }
-              }
-              
-              if (canProduce) {
-                // 消耗原材料
-                for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
-                  newRawMaterials = newRawMaterials.map(material => {
-                    if (material.type === materialType) {
-                      return {
-                        ...material,
-                        quantity: material.quantity - requiredQuantity
-                      };
-                    }
-                    return material;
-                  });
-                }
-                
-                // 生产完成，将在制品转换为成品
-                const productIndex = newFinishedProducts.findIndex(p => p.type === line.product!);
-                if (productIndex !== -1) {
-                  newFinishedProducts[productIndex] = {
-                    ...newFinishedProducts[productIndex],
-                    quantity: newFinishedProducts[productIndex].quantity + line.inProgressProducts,
-                  };
-                  totalProduced += line.inProgressProducts;
-                }
-              }
-              
-              // 重置在制品数量，准备开始下一批生产
-              line.inProgressProducts = 0;
-            }
-            
-            // 开始下一批生产前检查原材料是否足够
+
             let productionQuantity = line.inProgressProducts;
-            if (line.status === 'running' && line.product && line.inProgressProducts === 0) {
-              // 计算该产品需要的原材料
-              const requiredMaterials: Record<string, number> = {};
-              if (line.product === 'P1') {
-                requiredMaterials['R1'] = 1;
-              } else if (line.product === 'P2') {
-                requiredMaterials['R1'] = 1;
-                requiredMaterials['R2'] = 1;
-              } else if (line.product === 'P3') {
-                requiredMaterials['R2'] = 2;
-                requiredMaterials['R3'] = 1;
-              } else if (line.product === 'P4') {
-                requiredMaterials['R2'] = 1;
-                requiredMaterials['R3'] = 1;
-                requiredMaterials['R4'] = 2;
+            if (shouldComplete && line.inProgressProducts > 0 && line.product) {
+              // 生产完成，将在制品转换为成品（开工时已投料付加工费）
+              const productIndex = newFinishedProducts.findIndex(p => p.type === line.product!);
+              if (productIndex !== -1) {
+                newFinishedProducts[productIndex] = {
+                  ...newFinishedProducts[productIndex],
+                  quantity: newFinishedProducts[productIndex].quantity + line.inProgressProducts,
+                };
+                totalProduced += line.inProgressProducts;
               }
-              
-              // 检查原材料是否足够
-              let canProduce = true;
-              for (const [materialType, requiredQuantity] of Object.entries(requiredMaterials)) {
-                const material = newRawMaterials.find(m => m.type === materialType);
-                if (!material || material.quantity < requiredQuantity) {
-                  canProduce = false;
-                  break;
-                }
-              }
-              
-              // 如果原材料足够，开始生产（不消耗原材料，原材料消耗在生产完成时处理）
-              if (canProduce) {
-                // 设置在制品数量为1，开始生产
-                productionQuantity = 1;
-              } else {
-                // 原材料不足，不生产，保持在制品数量为0
-                productionQuantity = 0;
-              }
+              productionQuantity = 0;
             }
-            
+
+            // 开始下一批生产：投料并支付加工费
+            if (line.product && productionQuantity === 0 && startLineProduction(line, 'auto')) {
+              productionQuantity = 1;
+            }
+
             newFactories[factoryIndex].productionLines[lineIndex] = {
               ...newFactories[factoryIndex].productionLines[lineIndex],
               inProgressProducts: productionQuantity,
@@ -2194,70 +2055,96 @@ export const useEnterpriseStore = create<{
           }
         });
       });
-      
+
       // 8. 检查原材料是否耗尽，自动将生产线状态从"运行"更新为"停产"
-      // 遍历所有生产线，检查其生产所需的原材料是否耗尽
       newFactories.forEach((factory, factoryIndex) => {
         factory.productionLines.forEach((line, lineIndex) => {
-          // 只处理运行中的生产线
           if (line.status === 'running' && line.product) {
-            // 计算该产品需要的原材料
-            const requiredMaterials: Record<string, number> = {};
-            if (line.product === 'P1') {
-              requiredMaterials['R1'] = 1;
-            } else if (line.product === 'P2') {
-              requiredMaterials['R1'] = 1;
-              requiredMaterials['R2'] = 1;
-            } else if (line.product === 'P3') {
-              requiredMaterials['R2'] = 2;
-              requiredMaterials['R3'] = 1;
-            } else if (line.product === 'P4') {
-              requiredMaterials['R2'] = 1;
-              requiredMaterials['R3'] = 1;
-              requiredMaterials['R4'] = 2;
-            }
-            
-            // 检查所有需要的原材料是否都已经耗尽（数量为0）
-            let allMaterialsExhausted = true;
-            for (const [materialType, _] of Object.entries(requiredMaterials)) {
+            const bom = PRODUCT_BOM[line.product];
+            // 检查所需原材料是否全部耗尽（数量为0）
+            const allMaterialsExhausted = Object.keys(bom).every(materialType => {
               const material = newRawMaterials.find(m => m.type === materialType);
-              if (material && material.quantity > 0) {
-                allMaterialsExhausted = false;
-                break;
-              }
-            }
-            
-            // 如果所有所需原材料都已耗尽，将生产线状态改为"stopped"（停产）
+              return !material || material.quantity === 0;
+            });
+
             if (allMaterialsExhausted) {
-              // 更新生产线状态
               newFactories[factoryIndex].productionLines[lineIndex] = {
                 ...line,
                 status: 'stopped',
                 inProgressProducts: 0, // 清空在制品
               };
-              
-              // 记录停产的生产线信息
               stoppedLines.push({
                 lineName: line.name,
                 product: line.product,
-                requiredMaterials: Object.keys(requiredMaterials)
+                requiredMaterials: Object.keys(bom)
               });
             }
           }
         });
       });
-      
-      // 更新生产/完工入库日志
+
+      // 更新生产/完工入库日志（运行控制表：季度-7，含生产成本注记）
       const productionLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-production`,
         year: newYear,
         quarter: newQuarter,
         timestamp: Date.now(),
-        description: `更新生产/完工入库，本季度生产完成：${totalProduced}个产品，当前成品库存：${newFinishedProducts.map(p => `${p.type}: ${p.quantity}`).join(', ')}`,
+        description: `更新生产/完工入库：完工${totalProduced}个产品，成品库存 ${newFinishedProducts.map(p => `${p.type}:${p.quantity}`).join(', ')}`,
         cashChange: 0,
-        newCash: initialCash + cashIncrease - rdInvestment,
+        newCash: initialCash - shortSettlement.due + cashIncrease - rdInvestment - autoProcessFees,
         operator: '系统自动',
+        stepId: 'q-7',
       };
+
+      // 5. 产品研发进度（仅 P2：6Q 分期、每季 1M、资金短缺自动中断，置于生产之后以核算可用资金）
+      const updatedProductRD = { ...state.state.production.productRD };
+      const completedProducts: string[] = [];
+      {
+        const p2 = updatedProductRD.P2;
+        if (p2.status === 'active' && !p2.completed) {
+          const availableForRD = initialCash - shortSettlement.due + cashIncrease - autoProcessFees;
+          if (availableForRD >= 1) {
+            const newProgress = Math.min(p2.progress + 1, 6);
+            const newPaid = p2.paidQuarters + 1;
+            const completed = newPaid >= 6;
+            updatedProductRD.P2 = {
+              ...p2,
+              progress: newProgress,
+              paidQuarters: newPaid,
+              totalInvestment: p2.totalInvestment + 1,
+              status: completed ? 'completed' : 'active',
+              completed: p2.completed || completed,
+            };
+            rdInvestment += 1;
+            if (completed) {
+              completedProducts.push('P2');
+            }
+          } else {
+            // 资金不足：本季度研发中断（保持 active，后续季度资金充足自动续投）
+            const interruptLog = {
+              id: `log-${Date.now()}-rd-interrupt`,
+              time: new Date().toLocaleString(),
+              operator: '系统自动',
+              action: '产品研发中断',
+              dataChange: 'P2研发因现金不足本季度中断，资金充足后自动续投',
+            };
+            newOperationLogs.unshift(interruptLog);
+          }
+        }
+      }
+
+      // 产品研发投资日志 - 只有当有研发投资时才记录
+      const rdLog: FinancialLogRecord | null = rdInvestment > 0 ? {
+        id: `finlog-${Date.now()}-rd`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: `产品研发投资：-${rdInvestment}M(P2)`,
+        cashChange: -rdInvestment,
+        newCash: initialCash - shortSettlement.due + cashIncrease - rdInvestment,
+        operator: '系统自动',
+        stepId: 'q-15',
+      } : null;
       
       // 9. 生成原材料耗尽导致停产的事件记录
       // 如果有生产线因原材料耗尽而停产，生成事件记录
@@ -2283,6 +2170,7 @@ export const useEnterpriseStore = create<{
       let ledger: AnnualLedger = {
         ...state.state.operation.annualLedger,
         interestExpense: state.state.operation.annualLedger.interestExpense + shortSettlement.interest,
+        rdFee: state.state.operation.annualLedger.rdFee + rdInvestment,
       };
 
       // e-1 支付利息/更新长期贷款：对每笔存续长贷付息、期限递减、到期还本
@@ -2434,7 +2322,7 @@ export const useEnterpriseStore = create<{
       }
 
       // 总现金支出（所得税不在结账时扣：计入应付税金、下年初交纳）
-      const totalCashOut = maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment;
+      const totalCashOut = maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment + autoProcessFees;
 
       // 计算新的现金余额
       const newCash = initialCash - shortSettlement.due + cashIncrease - totalCashOut;
@@ -2542,10 +2430,10 @@ export const useEnterpriseStore = create<{
       });
       
       // 构建所有日志记录
-      const allLogs = [shortSettlementLog, quarterStartLog, arLog, materialArrivalLog, productionLog, quarterEndLog];
+      const allLogs = [shortSettlementLog, quarterStartLog, arLog, materialArrivalLog, ...startProductionLogs, productionLog, quarterEndLog];
       // 只有当有研发投资时才添加研发投资日志
       if (rdLog) {
-        allLogs.splice(3, 0, rdLog); // 插入到arLog之后
+        allLogs.splice(5, 0, rdLog); // 插入到开工日志之后
       }
       allLogs.push(...yearEndLogs);
       if (yearEndLog) {
