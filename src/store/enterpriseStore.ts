@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger } from '../types/enterprise';
-import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE } from '../utils/rules';
+import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE } from '../utils/rules';
 import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS } from '../config/marketDemand';
 
 // 全局状态，用于跟踪重置次数
@@ -1302,54 +1302,57 @@ export const useEnterpriseStore = create<{
     }),
 
   // 物流操作
+  // 下原料订单（R1/R2提前1季、R3/R4提前2季；到货入库时付款，绝对季度索引跨年不失序）
   placeRawMaterialOrder: (materialType, quantity) =>
     set((state) => {
       const material = state.state.logistics.rawMaterials.find((m) => m.type === materialType);
       if (!material) return state;
-      
-      const orderId = `order-${Date.now()}`;
+      if (quantity <= 0) {
+        return { validationError: '下单数量须大于0' };
+      }
+
+      const { year, quarter } = { year: state.state.operation.currentYear, quarter: state.state.operation.currentQuarter };
+      const orderAbs = absQuarter(year, quarter);
+      const arrivalAbs = orderAbs + material.leadTime;
+      const arrival = fromAbsQuarter(arrivalAbs);
       const newOrder = {
-        id: orderId,
+        id: `order-${Date.now()}`,
         materialType,
         quantity,
         price: material.price,
-        orderPeriod: state.state.operation.currentQuarter,
-        arrivalPeriod: state.state.operation.currentQuarter + material.leadTime,
+        orderPeriod: orderAbs,
+        arrivalPeriod: arrivalAbs,
       };
-      
-      // 计算订单总金额
+
+      // 订单总金额（到货入库时付款，此处不计现金变动）
       const totalCost = quantity * material.price;
-      // 扣除现金
-      const newCash = state.state.finance.cash - totalCost;
-      
+
       // 添加操作日志
       const operationLog = {
         id: `log-${Date.now()}`,
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
         action: '下原材料订单',
-        dataChange: `下${materialType}原料订单${quantity}个，预计${newOrder.arrivalPeriod}Q到货，总价${totalCost}M`,
+        dataChange: `下${materialType}原料订单${quantity}个，预计第${arrival.year}年第${arrival.quarter}季度到货，到货时付款${totalCost}M`,
       };
-      
-      // 添加财务日志
+
+      // 添加财务日志（运行控制表：季度-6，下单不产生现金变动）
       const financialLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-material-order`,
-        year: state.state.operation.currentYear,
-        quarter: state.state.operation.currentQuarter,
+        year,
+        quarter,
         timestamp: Date.now(),
-        description: `下${materialType}原料订单${quantity}个，花费${totalCost}M，预计${newOrder.arrivalPeriod}Q到货`,
-        cashChange: -totalCost,
-        newCash,
+        description: `下原料订单：${quantity}*${materialType}(${totalCost}M，第${arrival.year}年第${arrival.quarter}季到货)`,
+        cashChange: 0,
+        newCash: state.state.finance.cash,
         operator: '企业1管理者',
+        stepId: 'q-6',
       };
-      
+
       return {
+        validationError: null,
         state: {
           ...state.state,
-          finance: {
-            ...state.state.finance,
-            cash: newCash,
-          },
           logistics: {
             ...state.state.logistics,
             rawMaterialOrders: [...state.state.logistics.rawMaterialOrders, newOrder],
@@ -1363,49 +1366,41 @@ export const useEnterpriseStore = create<{
       };
     }),
 
-  // 取消原材料订单
+  // 取消原材料订单（下单未付款，取消无资金变动）
   cancelRawMaterialOrder: (orderId) =>
     set((state) => {
       // 找到要取消的订单
       const orderToCancel = state.state.logistics.rawMaterialOrders.find(order => order.id === orderId);
       if (!orderToCancel) return state;
-      
-      // 计算订单总金额，用于返还资金
-      const refundAmount = orderToCancel.quantity * orderToCancel.price;
-      // 返还现金
-      const newCash = state.state.finance.cash + refundAmount;
-      
+
       // 过滤掉要取消的订单
       const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => order.id !== orderId);
-      
+
       // 添加操作日志
       const operationLog = {
         id: `log-${Date.now()}`,
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
         action: '取消原材料订单',
-        dataChange: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个，预计${orderToCancel.arrivalPeriod}Q到货，返还资金${refundAmount}M`,
+        dataChange: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个（下单未付款，无资金变动）`,
       };
-      
+
       // 添加财务日志
       const financialLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-material-cancel`,
         year: state.state.operation.currentYear,
         quarter: state.state.operation.currentQuarter,
         timestamp: Date.now(),
-        description: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个，返还资金${refundAmount}M`,
-        cashChange: refundAmount,
-        newCash,
+        description: `取消${orderToCancel.materialType}原料订单${orderToCancel.quantity}个`,
+        cashChange: 0,
+        newCash: state.state.finance.cash,
         operator: '企业1管理者',
+        stepId: 'q-6',
       };
-      
+
       return {
         state: {
           ...state.state,
-          finance: {
-            ...state.state.finance,
-            cash: newCash,
-          },
           logistics: {
             ...state.state.logistics,
             rawMaterialOrders: remainingOrders,
@@ -1717,24 +1712,21 @@ export const useEnterpriseStore = create<{
       return state;
     }),
 
-  // 旧的selectOrder函数，保持不变
+  // 选择订单（从可用列表移入已选列表，不重复）
   selectOrder: (orderId) =>
     set((state) => {
-      const newAvailableOrders = state.state.marketing.availableOrders.map((order) =>
-        order.id === orderId ? { ...order, isSelected: true } : order
-      );
-      const selectedOrder = state.state.marketing.availableOrders.find((order) => order.id === orderId);
-      const newSelectedOrders = selectedOrder
-        ? [...state.state.marketing.selectedOrders, { ...selectedOrder, isSelected: true }]
-        : state.state.marketing.selectedOrders;
-      
+      const order = state.state.marketing.availableOrders.find((o) => o.id === orderId);
+      if (!order) {
+        return { validationError: '该订单不在可选列表中' };
+      }
       return {
+        validationError: null,
         state: {
           ...state.state,
           marketing: {
             ...state.state.marketing,
-            availableOrders: newAvailableOrders,
-            selectedOrders: newSelectedOrders,
+            availableOrders: state.state.marketing.availableOrders.filter((o) => o.id !== orderId),
+            selectedOrders: [...state.state.marketing.selectedOrders, { ...order, isSelected: true }],
           },
         },
       };
@@ -1867,10 +1859,13 @@ export const useEnterpriseStore = create<{
         stepId: 'q-11',
       };
 
-      // 6. 处理原材料订单到货
+      // 6. 处理原材料订单到货（绝对季度索引匹配；入库时付款，现金不足计入应付款）
       let newRawMaterials = [...state.state.logistics.rawMaterials];
+      let materialPayment = 0;
+      let payableIncrease = 0;
+      const arrivedDescriptions: string[] = [];
       const remainingOrders = state.state.logistics.rawMaterialOrders.filter(order => {
-        if (order.arrivalPeriod === newQuarter) {
+        if (order.arrivalPeriod === newAbsQuarter) {
           // 订单到货，更新原材料库存
           const materialIndex = newRawMaterials.findIndex(m => m.type === order.materialType);
           if (materialIndex !== -1) {
@@ -1879,21 +1874,31 @@ export const useEnterpriseStore = create<{
               quantity: newRawMaterials[materialIndex].quantity + order.quantity,
             };
           }
+          const cost = order.quantity * order.price;
+          const cashBeforeMaterial = initialCash - shortSettlement.due + cashIncrease - materialPayment;
+          const fromCash = Math.min(cost, Math.max(0, cashBeforeMaterial));
+          materialPayment += fromCash;
+          const toPayable = cost - fromCash;
+          payableIncrease += toPayable;
+          arrivedDescriptions.push(`${order.quantity}*${order.materialType}(${cost}M${toPayable > 0 ? `，其中${toPayable}M计入应付款` : ''})`);
           return false; // 订单已完成，从列表中移除
         }
         return true; // 订单未完成，保留在列表中
       });
-      
-      // 原材料入库日志
+
+      // 原材料入库日志（运行控制表：季度-5）
       const materialArrivalLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-material`,
         year: newYear,
         quarter: newQuarter,
         timestamp: Date.now(),
-        description: `原材料入库/更新原料订单，当前原材料库存：${newRawMaterials.map(m => `${m.type}: ${m.quantity}`).join(', ')}`,
-        cashChange: 0,
-        newCash: initialCash + cashIncrease - rdInvestment,
+        description: arrivedDescriptions.length > 0
+          ? `原材料入库：${arrivedDescriptions.join('，')}`
+          : '原材料入库/更新原料订单：无到货',
+        cashChange: -materialPayment,
+        newCash: initialCash - shortSettlement.due + cashIncrease - materialPayment,
         operator: '系统自动',
+        stepId: 'q-5',
       };
       
       // 生成季初现金盘点日志（在原材料入库后生成，使用更新后的状态）
@@ -2329,7 +2334,7 @@ export const useEnterpriseStore = create<{
       }
 
       // 总现金支出（所得税不在结账时扣：计入应付税金、下年初交纳）
-      const totalCashOut = maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment + autoProcessFees;
+      const totalCashOut = materialPayment + maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment + autoProcessFees;
 
       // 计算新的现金余额
       const newCash = initialCash - shortSettlement.due + cashIncrease - totalCashOut;
@@ -2478,6 +2483,7 @@ export const useEnterpriseStore = create<{
           ...state.state.finance,
           cash: finalCash,
           accountsReceivable: newAR,
+          accountsPayable: state.state.finance.accountsPayable + payableIncrease,
           loans: survivingLoans,
           longTermLoan: {
             ...state.state.finance.longTermLoan,
