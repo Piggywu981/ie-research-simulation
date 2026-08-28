@@ -7,10 +7,10 @@ const ProductionCenter: React.FC = () => {
   const { state, investProductR_D, addProductionLine, removeProductionLine, cancelProduction, startProduction, convertProductionLine } = useEnterpriseStore();
   const { production, finance, productionLineLimits } = state;
   const [addingLine, setAddingLine] = useState<string | null>(null); // 记录当前正在添加生产线的厂房ID
-  const [selectedProduct, setSelectedProduct] = useState<'P1' | 'P2' | 'P3' | 'P4'>('P1');
+  const [selectedProduct, setSelectedProduct] = useState<'P1' | 'P2'>('P1');
   const [selectedLineType, setSelectedLineType] = useState<'automatic' | 'semi-automatic' | 'manual' | 'flexible'>('automatic');
   const [convertingLine, setConvertingLine] = useState<string | null>(null); // 记录当前正在转产的生产线ID
-  const [newProduct, setNewProduct] = useState<'P1' | 'P2' | 'P3' | 'P4'>('P1');
+  const [newProduct, setNewProduct] = useState<'P1' | 'P2'>('P1');
 
   // 计算已使用的生产线数量
   const getUsedProductionLines = (lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible') => {
@@ -218,18 +218,12 @@ const ProductionCenter: React.FC = () => {
                             <label className="block text-xs text-gray-600 mb-1">选择新产品:</label>
                             <select 
                               value={newProduct}
-                              onChange={(e) => setNewProduct(e.target.value as 'P1' | 'P2' | 'P3' | 'P4')}
+                              onChange={(e) => setNewProduct(e.target.value as 'P1' | 'P2')}
                               className="w-full border border-gray-300 rounded-md p-2 text-sm"
                             >
                               <option value="P1">P1 (已完成研发)</option>
                               <option value="P2" disabled={!production.productRD.P2.completed}>
                                 P2 ({production.productRD.P2.completed ? '已完成研发' : '研发中'})
-                              </option>
-                              <option value="P3" disabled={!production.productRD.P3.completed}>
-                                P3 ({production.productRD.P3.completed ? '已完成研发' : '研发中'})
-                              </option>
-                              <option value="P4" disabled={!production.productRD.P4.completed}>
-                                P4 ({production.productRD.P4.completed ? '已完成研发' : '研发中'})
                               </option>
                             </select>
                           </div>
@@ -355,18 +349,12 @@ const ProductionCenter: React.FC = () => {
                           <label className="block text-sm text-gray-600 mb-1">选择产品:</label>
                           <select 
                             value={selectedProduct}
-                            onChange={(e) => setSelectedProduct(e.target.value as 'P1' | 'P2' | 'P3' | 'P4')}
+                            onChange={(e) => setSelectedProduct(e.target.value as 'P1' | 'P2')}
                             className="w-full border border-gray-300 rounded-md p-2 text-sm"
                           >
                             <option value="P1">P1 (已完成研发)</option>
                             <option value="P2" disabled={!production.productRD.P2.completed}>
                               P2 ({production.productRD.P2.completed ? '已完成研发' : '研发中'})
-                            </option>
-                            <option value="P3" disabled={!production.productRD.P3.completed}>
-                              P3 ({production.productRD.P3.completed ? '已完成研发' : '研发中'})
-                            </option>
-                            <option value="P4" disabled={!production.productRD.P4.completed}>
-                              P4 ({production.productRD.P4.completed ? '已完成研发' : '研发中'})
                             </option>
                           </select>
                         </div>
@@ -422,7 +410,7 @@ const ProductionCenter: React.FC = () => {
       {/* 产品研发进度 */}
       <div className="dashboard-card">
         <h2 className="dashboard-title">产品研发进度</h2>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* P1 产品 */}
           <div className="border border-gray-200 rounded-lg p-4 bg-white">
             <div className="flex justify-between items-center mb-2">
@@ -451,88 +439,26 @@ const ProductionCenter: React.FC = () => {
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">进度:</span>
-              <span>{production.productRD.P2.progress}/6Q</span>
+              <span>{production.productRD.P2.paidQuarters}/6季</span>
             </div>
             <div className="flex justify-between text-sm mt-1">
-              <span className="text-gray-600">总投资:</span>
-              <span>{production.productRD.P2.totalInvestment}M</span>
+              <span className="text-gray-600">累计投资:</span>
+              <span>{production.productRD.P2.totalInvestment}/6M</span>
             </div>
             <div className="mt-3">
-              <button 
+              <button
                 className="w-full bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
-                onClick={() => investProductR_D('P2', 6)}
-                disabled={production.productRD.P2.completed || production.productRD.P2.totalInvestment > 0}
+                onClick={() => investProductR_D('P2')}
+                disabled={production.productRD.P2.status !== 'idle'}
               >
-                投资研发
+                {production.productRD.P2.status === 'idle' ? '启动研发（1M/季×6季）' : production.productRD.P2.completed ? '已完成' : '研发进行中'}
               </button>
+              {production.productRD.P2.status !== 'idle' && (
+                <div className="text-xs text-gray-500 text-center mt-1">每季度自动续投1M，现金不足时中断</div>
+              )}
             </div>
           </div>
 
-          {/* P3 产品 */}
-          <div className="border border-gray-200 rounded-lg p-4 bg-white">
-            <div className="flex justify-between items-center mb-2">
-              <div className="font-medium">P3 产品</div>
-              <div className={`px-2 py-1 rounded text-xs ${production.productRD.P3.completed ? 'status-active' : 'status-pending'}`}>
-                {production.productRD.P3.completed ? '已完成' : '研发中'}
-              </div>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
-              <div 
-                className="bg-blue-500 h-2 rounded-full" 
-                style={{ width: `${(production.productRD.P3.progress / 6) * 100}%` }}
-              ></div>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-600">进度:</span>
-              <span>{production.productRD.P3.progress}/6Q</span>
-            </div>
-            <div className="flex justify-between text-sm mt-1">
-              <span className="text-gray-600">总投资:</span>
-              <span>{production.productRD.P3.totalInvestment}M</span>
-            </div>
-            <div className="mt-3">
-              <button 
-                className="w-full bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
-                onClick={() => investProductR_D('P3', 6)}
-                disabled={production.productRD.P3.completed || production.productRD.P3.totalInvestment > 0}
-              >
-                投资研发
-              </button>
-            </div>
-          </div>
-
-          {/* P4 产品 */}
-          <div className="border border-gray-200 rounded-lg p-4 bg-white">
-            <div className="flex justify-between items-center mb-2">
-              <div className="font-medium">P4 产品</div>
-              <div className={`px-2 py-1 rounded text-xs ${production.productRD.P4.completed ? 'status-active' : 'status-pending'}`}>
-                {production.productRD.P4.completed ? '已完成' : '研发中'}
-              </div>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
-              <div 
-                className="bg-blue-500 h-2 rounded-full" 
-                style={{ width: `${(production.productRD.P4.progress / 6) * 100}%` }}
-              ></div>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-600">进度:</span>
-              <span>{production.productRD.P4.progress}/6Q</span>
-            </div>
-            <div className="flex justify-between text-sm mt-1">
-              <span className="text-gray-600">总投资:</span>
-              <span>{production.productRD.P4.totalInvestment}M</span>
-            </div>
-            <div className="mt-3">
-              <button 
-                className="w-full bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600 disabled:bg-blue-300"
-                onClick={() => investProductR_D('P4', 6)}
-                disabled={production.productRD.P4.completed || production.productRD.P4.totalInvestment > 0}
-              >
-                投资研发
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>

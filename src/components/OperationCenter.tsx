@@ -1,6 +1,7 @@
 'use client';
 import React from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
+import { buildYearControlTable, toCSV } from '../utils/controlTable';
 import { FinancialLogRecord, SaveFile as EnterpriseSaveFile } from '../types/enterprise';
 
 // 操作步骤类型定义
@@ -446,17 +447,17 @@ const OPERATION_STEPS: OperationStep[] = [
   { phase: '年初', step: '', description: '支付应付税' },
   { phase: '季度', step: '1', description: '季初现金盘点（请填写库存数量）' },
   { phase: '季度', step: '2', description: '更新短贷/还本付息' },
-  { phase: '季度', step: '3', description: '申请短期贷款/高利贷' },
+  { phase: '季度', step: '3', description: '申请短期贷款' },
   { phase: '季度', step: '4', description: '更新应付账款/归还应付账款' },
   { phase: '季度', step: '5', description: '原材料入库/更新原材料单' },
   { phase: '季度', step: '6', description: '下原料订单' },
   { phase: '季度', step: '7', description: '更新生产/完工入库' },
   { phase: '季度', step: '8', description: '投资新生产线/变卖生产线/生产线转产' },
-  { phase: '季度', step: '9', description: '向其他企业购买原材料/出售原材料' },
+  { phase: '季度', step: '9', description: '（本项目未启用）' },
   { phase: '季度', step: '10', description: '开始下一批生产' },
   { phase: '季度', step: '11', description: '更新应收账款/应收账款收现' },
   { phase: '季度', step: '12', description: '出售厂房' },
-  { phase: '季度', step: '13', description: '向其他企业购买成品/出售成品' },
+  { phase: '季度', step: '13', description: '（本项目未启用）' },
   { phase: '季度', step: '14', description: '按订单交货' },
   { phase: '季度', step: '15', description: '产品研发投资' },
   { phase: '季度', step: '16', description: '支付行政管理费' },
@@ -590,182 +591,58 @@ const OperationOverview: React.FC<{
 };
 
 // 工具函数：生成CSV内容
-const generateCSVContent = (
-  allSaveFiles: SaveFile[],
-  financialLogs: FinancialLogRecord[],
-  cashFlowHistory: any[],
-  rawMaterialOrders: any[],
-  currentState: any
-): string => {
-  let csvContent = '';
 
-  // 按年份生成表格
-  [1, 2, 3, 4].forEach(year => {
-    // 年份标题
-    csvContent += `第${year}年运营控制表\n`;
-
-    // 表头
-    csvContent += '序号,操作项,第1季度,第2季度,第3季度,第4季度\n';
-
-    // 添加操作项
-    OPERATION_STEPS.forEach(step => {
-      // 跳过非季度操作项（年末操作不显示在季度表格中）
-      if (step.phase !== '季度') return;
-
-      const row = [step.step || '', step.description];
-
-      // 为每个季度生成内容
-      [1, 2, 3, 4].forEach(quarter => {
-        let cellContent = '';
-
-        // 特殊处理：开始下一批生产
-        if (step.description.includes('开始下一批生产')) {
-          try {
-            // 获取生产线数据
-            const productionLineData = getProductionLineData(allSaveFiles, year, quarter);
-            
-            // 如果没有运行中的生产线，显示横线
-            if (productionLineData.length === 0) {
-              cellContent = '-';
-            } else {
-              // 计算生产费用
-              const productionCosts = calculateProductionCosts(productionLineData);
-              // 合并同类项
-              const groupedCosts = groupProductionCosts(productionCosts);
-              // 格式化显示
-              const formattedProduction = groupedCosts.map(formatProductionCost);
-              cellContent = formattedProduction.join('/');
-            }
-          } catch (error) {
-            // 没有生产记录或数据异常，显示横线
-            cellContent = '-';
-          }
-        }
-        // 特殊处理：其他现金收支情况登记 - 只保留广告投放
-        else if (step.description.includes('其他现金收支情况登记')) {
-          cellContent = getOtherCashFlowDatum(financialLogs, year, quarter);
-        }
-        // 特殊处理：季初现金盘点
-        else if (step.description.includes('季初现金盘点')) {
-          const { cash, finishedProducts, rawMaterials } = getQuarterStartInventory(
-            allSaveFiles,
-            year,
-            quarter,
-            financialLogs,
-            cashFlowHistory
-          );
-          cellContent = formatInventory(cash, finishedProducts, rawMaterials);
-        }
-        // 特殊处理：现金结余数量
-        else if (step.description.includes('本季库存（现金）结余数量')) {
-          cellContent = getQuarterEndCash(financialLogs, year, quarter);
-        }
-        // 特殊处理：产品研发投资
-        else if (step.description.includes('产品研发投资')) {
-          cellContent = getRDDatum(financialLogs, year, quarter);
-        }
-        // 特殊处理：下原料订单
-        else if (step.description.includes('下原料订单')) {
-          cellContent = getMaterialOrderDatum(financialLogs, year, quarter);
-        }
-        // 特殊处理：原材料入库/更新原材料单
-        else if (step.description.includes('原材料入库/更新原材料单')) {
-          cellContent = getMaterialArrivalDatum(rawMaterialOrders, year, quarter);
-        }
-        // 特殊处理：支付行政管理费（固定在第四季度）
-        else if (step.description.includes('支付行政管理费')) {
-          cellContent = quarter === 4 ? '-1M' : '-';
-        }
-        // 特殊处理：收入合计和支出合计
-        else if (
-          step.description.includes('入库（收入）数量合计') ||
-          step.description.includes('出库（现金支出）合计')
-        ) {
-          const isIncome = step.description.includes('收入');
-          const total = calculateQuarterTotal(financialLogs, year, quarter, isIncome);
-          cellContent = formatTotal(total, isIncome);
-        }
-        // 特殊处理：新年度规划会议和制定新年度计划固定在每年第一季度打勾
-        else if (
-          step.description.includes('新年度规划会议') ||
-          step.description.includes('制定新年度计划')
-        ) {
-          // 固定在每年第一季度显示为已完成，其他季度显示横杠占位符
-          cellContent = quarter === 1 ? '已完成' : '-';
-        }
-        // 其他操作项，显示是否完成
-        else {
-          // 根据日志记录判断该操作是否完成
-          const isCompleted = financialLogs.some(log => {
-            return matchOperation(log, step.description);
-          });
-          cellContent = isCompleted ? '已完成' : '-';
-        }
-
-        row.push(cellContent);
-      });
-
-      csvContent += row.join(',') + '\n';
-    });
-
-    // 年份之间添加空行
-    csvContent += '\n\n';
-  });
-
-  return csvContent;
-};
-
-// 导出报告组件
-const ExportReportButton: React.FC<{
-  allSaveFiles: SaveFile[];
+// 按年导出运行控制表（第X年运行控制表.csv，含年初/季度/年末全部30行）
+const YearlyExportButtons: React.FC<{
+  allSaveFiles: EnterpriseSaveFile[];
   financialLogs: FinancialLogRecord[];
-  cashFlowHistory: any[];
-  rawMaterialOrders: any[];
-  currentState: any;
-}> = ({ allSaveFiles, financialLogs, cashFlowHistory, rawMaterialOrders, currentState }) => {
-  // 导出报告为CSV
-  const handleExportReport = () => {
-    const csvContent = generateCSVContent(
-      allSaveFiles,
-      financialLogs,
-      cashFlowHistory,
-      rawMaterialOrders,
-      currentState
-    );
-
-    // 创建Blob对象
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-
-    // 创建下载链接
+  currentYear: number;
+}> = ({ allSaveFiles, financialLogs, currentYear }) => {
+  const handleExportYear = (year: number) => {
+    const table = buildYearControlTable(year, financialLogs, allSaveFiles);
+    const csvContent = toCSV(table, year);
+    const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `运行控制表.csv`;
-
-    // 触发下载
+    a.download = `第${year}年运行控制表.csv`;
     document.body.appendChild(a);
     a.click();
-
-    // 清理
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
+  const yearsWithData = new Set(financialLogs.map((l) => l.year));
+
   return (
-    <button
-      onClick={handleExportReport}
-      className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium flex items-center space-x-2"
-    >
-      <span>导出报告</span>
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-        />
-      </svg>
-    </button>
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-sm text-gray-600">导出运行控制表：</span>
+      {[1, 2, 3, 4].map((year) => {
+        const hasData = yearsWithData.has(year) || (year === currentYear && financialLogs.length > 0);
+        return (
+          <button
+            key={year}
+            onClick={() => handleExportYear(year)}
+            disabled={!hasData}
+            className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center space-x-1 ${
+              hasData
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+            }`}
+          >
+            <span>第{year}年</span>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+          </button>
+        );
+      })}
+    </div>
   );
 };
 
@@ -1056,12 +933,10 @@ const OperationControlTable: React.FC<{
     <div className="dashboard-card">
       <div className="flex justify-between items-center mb-4">
         <h2 className="dashboard-title text-2xl font-bold text-green-600">模拟结束报告</h2>
-        <ExportReportButton
+        <YearlyExportButtons
           allSaveFiles={allSaveFiles}
           financialLogs={financialLogs}
-          cashFlowHistory={cashFlowHistory}
-          rawMaterialOrders={rawMaterialOrders}
-          currentState={currentState}
+          currentYear={financialLogs[0]?.year ?? 1}
         />
       </div>
 
@@ -1145,6 +1020,15 @@ const OperationCenter: React.FC = () => {
           onNextQuarter={nextQuarter}
         />
       )}
+
+      {/* 按年导出运行控制表（运营中随时可导出已完成年度） */}
+      <div className="dashboard-card">
+        <YearlyExportButtons
+          allSaveFiles={allSaveFiles}
+          financialLogs={operation.financialLogs}
+          currentYear={operation.currentYear}
+        />
+      </div>
 
       {/* 操作记录 */}
       <OperationLogs logs={operation.operationLogs} />
