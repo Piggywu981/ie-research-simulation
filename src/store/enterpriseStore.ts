@@ -306,6 +306,7 @@ export const useEnterpriseStore = create<{
   togglePaused: () => void;
   selectOrder: (orderId: string) => void;
   deliverOrder: (orderId: string) => void;
+  registerOtherCashFlow: (description: string, amount: number) => void;
   addAvailableOrder: (order: Omit<Order, 'id' | 'isSelected' | 'isDelivered'>) => void;
   removeAvailableOrder: (orderId: string) => void;
   moveOrderToSelected: (orderId: string) => void;
@@ -1840,6 +1841,54 @@ export const useEnterpriseStore = create<{
       };
     }),
 
+  // 其他现金收支情况登记（运行控制表：季度-17）：支出计入综合费用-其他，收入冲减额外收支
+  registerOtherCashFlow: (description, amount) =>
+    set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
+      const trimmed = description.trim();
+      if (!trimmed) {
+        return { validationError: '请填写收支说明' };
+      }
+      if (!Number.isFinite(amount) || amount === 0) {
+        return { validationError: '收支金额不能为0（支出填负数，收入填正数）' };
+      }
+      const newCash = state.state.finance.cash + amount;
+      if (newCash < 0) {
+        return { validationError: `现金不足：登记支出${-amount}M后现金将为${newCash}M` };
+      }
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-other`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `${amount > 0 ? '+' : '-'}${Math.abs(amount)}M(${trimmed})`,
+        cashChange: amount,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'q-17',
+      };
+      const annualLedger: AnnualLedger = amount < 0
+        ? { ...state.state.operation.annualLedger, otherFee: state.state.operation.annualLedger.otherFee + (-amount) }
+        : { ...state.state.operation.annualLedger, extraExpense: state.state.operation.annualLedger.extraExpense - amount };
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          finance: {
+            ...state.state.finance,
+            cash: newCash,
+          },
+          operation: {
+            ...state.state.operation,
+            annualLedger,
+            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+          },
+        },
+      };
+    }),
+
   // 运营操作
   nextQuarter: () =>
     set((state) => {
@@ -1882,6 +1931,25 @@ export const useEnterpriseStore = create<{
 
       // 增加现金（到期的应收账款）
       const cashIncrease = state.state.finance.accountsReceivable[0];
+
+      // 3. 更新应付账款/归还应付账款：原料入库时挂账的应付款于下季初全额归还（账期1季，运行控制表：季度-4）
+      const apPayment = state.state.finance.accountsPayable;
+      if (apPayment > initialCash - shortSettlement.due + cashIncrease) {
+        return { validationError: `现金不足以归还到期应付账款 ${apPayment}M，请先贴现应收账款或申请短期贷款` };
+      }
+      const apLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-ap`,
+        year: newYear,
+        quarter: newQuarter,
+        timestamp: Date.now(),
+        description: apPayment > 0
+          ? `归还应付账款：-应付款${apPayment}M`
+          : '更新应付账款：无到期应付款',
+        cashChange: apPayment > 0 ? -apPayment : 0,
+        newCash: initialCash - shortSettlement.due - apPayment,
+        operator: '系统自动',
+        stepId: 'q-4',
+      };
       // 本季度研发投资额（研发处理位于生产段之后，此处提前声明）
       let rdInvestment = 0;
 
@@ -1893,7 +1961,7 @@ export const useEnterpriseStore = create<{
         timestamp: Date.now(),
         description: `更新应收账款/应收款收现，收现金额：${cashIncrease}M`,
         cashChange: cashIncrease,
-        newCash: initialCash - shortSettlement.due + cashIncrease,
+        newCash: initialCash - shortSettlement.due - apPayment + cashIncrease,
         operator: '系统自动',
         stepId: 'q-11',
       };
@@ -1914,7 +1982,7 @@ export const useEnterpriseStore = create<{
             };
           }
           const cost = order.quantity * order.price;
-          const cashBeforeMaterial = initialCash - shortSettlement.due + cashIncrease - materialPayment;
+          const cashBeforeMaterial = initialCash - shortSettlement.due - apPayment + cashIncrease - materialPayment;
           const fromCash = Math.min(cost, Math.max(0, cashBeforeMaterial));
           materialPayment += fromCash;
           const toPayable = cost - fromCash;
@@ -1935,7 +2003,7 @@ export const useEnterpriseStore = create<{
           ? `原材料入库：${arrivedDescriptions.join('，')}`
           : '原材料入库/更新原料订单：无到货',
         cashChange: -materialPayment,
-        newCash: initialCash - shortSettlement.due + cashIncrease - materialPayment,
+        newCash: initialCash - shortSettlement.due - apPayment + cashIncrease - materialPayment,
         operator: '系统自动',
         stepId: 'q-5',
       };
@@ -1987,7 +2055,7 @@ export const useEnterpriseStore = create<{
       };
       const startLineProduction = (line: ProductionLine, source: 'auto' | 'resume') => {
         if (!line.product || !bomSufficient(line.product)) return false;
-        if (state.state.finance.cash - shortSettlement.due + cashIncrease - rdInvestment - autoProcessFees - PROCESS_FEE < 0) return false;
+        if (state.state.finance.cash - shortSettlement.due - apPayment + cashIncrease - rdInvestment - autoProcessFees - PROCESS_FEE < 0) return false;
         deductBom(line.product);
         autoProcessFees += PROCESS_FEE;
         startProductionLogs.push({
@@ -2030,7 +2098,7 @@ export const useEnterpriseStore = create<{
           // 处理安装中的生产线（按安装周期平均支付投资；安装完成的下一季度才开工）
           if (line.status === 'installing') {
             const installment = line.purchasePrice / Math.max(line.installationPeriod, 1);
-            const cashBeforeInstall = initialCash - shortSettlement.due + cashIncrease - materialPayment - totalInstallPayments;
+            const cashBeforeInstall = initialCash - shortSettlement.due - apPayment + cashIncrease - materialPayment - totalInstallPayments;
             if (cashBeforeInstall < installment) {
               installPaymentFailed = `现金不足以支付${line.name}安装投资分期${installment}M，请先贴现或贷款`;
               return;
@@ -2161,7 +2229,7 @@ export const useEnterpriseStore = create<{
         timestamp: Date.now(),
         description: `更新生产/完工入库：完工${totalProduced}个产品，成品库存 ${newFinishedProducts.map(p => `${p.type}:${p.quantity}`).join(', ')}`,
         cashChange: 0,
-        newCash: initialCash - shortSettlement.due + cashIncrease - rdInvestment - autoProcessFees,
+        newCash: initialCash - shortSettlement.due - apPayment + cashIncrease - rdInvestment - autoProcessFees,
         operator: '系统自动',
         stepId: 'q-7',
       };
@@ -2172,7 +2240,7 @@ export const useEnterpriseStore = create<{
       {
         const p2 = updatedProductRD.P2;
         if (p2.status === 'active' && !p2.completed) {
-          const availableForRD = initialCash - shortSettlement.due + cashIncrease - autoProcessFees;
+          const availableForRD = initialCash - shortSettlement.due - apPayment + cashIncrease - autoProcessFees;
           if (availableForRD >= 1) {
             const newProgress = Math.min(p2.progress + 1, 6);
             const newPaid = p2.paidQuarters + 1;
@@ -2211,7 +2279,7 @@ export const useEnterpriseStore = create<{
         timestamp: Date.now(),
         description: `产品研发投资：-${rdInvestment}M(P2)`,
         cashChange: -rdInvestment,
-        newCash: initialCash - shortSettlement.due + cashIncrease - rdInvestment,
+        newCash: initialCash - shortSettlement.due - apPayment + cashIncrease - rdInvestment,
         operator: '系统自动',
         stepId: 'q-15',
       } : null;
@@ -2399,17 +2467,17 @@ export const useEnterpriseStore = create<{
       const totalCashOut = materialPayment + totalInstallPayments + maintenanceCost + rentCost + longInterest + longPrincipal + adminCost + rdInvestment + autoProcessFees;
 
       // 计算新的现金余额
-      const newCash = initialCash - shortSettlement.due + cashIncrease - totalCashOut;
+      const newCash = initialCash - shortSettlement.due - apPayment + cashIncrease - totalCashOut;
       if (newCash < 0) {
         return { validationError: `本季度现金收支后将透支（缺口 ${-newCash}M），请先贴现应收账款或申请贷款` };
       }
-      const cashChange = -shortSettlement.due + cashIncrease - totalCashOut;
+      const cashChange = -shortSettlement.due - apPayment + cashIncrease - totalCashOut;
       const finalCash = newCash;
       const finalCashChange = cashChange;
 
-      // 回填年末各项日志的现金余额（按发生顺序）
+      // 回填年末各项日志的现金余额（按发生顺序；基数含季初短贷/应付归还与原料、安装、加工、研发等前置支出）
       {
-        let running = initialCash - shortSettlement.due + cashIncrease;
+        let running = initialCash - shortSettlement.due - apPayment + cashIncrease - materialPayment - totalInstallPayments - autoProcessFees - rdInvestment;
         yearEndLogs.forEach(log => {
           running += log.cashChange;
           log.newCash = running;
@@ -2434,6 +2502,9 @@ export const useEnterpriseStore = create<{
       }
       if (shortSettlement.due > 0) {
         detailedDescription += ` - 短贷还本付息 ${shortSettlement.due}M`;
+      }
+      if (apPayment > 0) {
+        detailedDescription += ` - 归还应付账款 ${apPayment}M`;
       }
       if (maintenanceCost > 0) {
         detailedDescription += ` - 设备维护费 ${maintenanceCost}M`;
@@ -2509,10 +2580,10 @@ export const useEnterpriseStore = create<{
       
       // 构建所有日志记录（年末结算日志归属收尾年度第4季度，便于控制表按年推导）
       const remappedYearEndLogs = yearEndLogs.map(l => ({ ...l, year: closingYear, quarter: 4 }));
-      const allLogs = [shortSettlementLog, quarterStartLog, arLog, materialArrivalLog, ...installPaymentLogs, ...startProductionLogs, productionLog, quarterEndLog, ...remappedYearEndLogs];
+      const allLogs = [shortSettlementLog, apLog, quarterStartLog, arLog, materialArrivalLog, ...installPaymentLogs, ...startProductionLogs, productionLog, quarterEndLog, ...remappedYearEndLogs];
       // 只有当有研发投资时才添加研发投资日志
       if (rdLog) {
-        allLogs.splice(5, 0, rdLog); // 插入到开工日志之后
+        allLogs.splice(6, 0, rdLog); // 插入到开工日志之后
       }
       if (yearEndLog) {
         allLogs.push(yearEndLog);
@@ -2545,7 +2616,7 @@ export const useEnterpriseStore = create<{
           ...state.state.finance,
           cash: finalCash,
           accountsReceivable: newAR,
-          accountsPayable: state.state.finance.accountsPayable + payableIncrease,
+          accountsPayable: payableIncrease,
           loans: survivingLoans,
           longTermLoan: {
             ...state.state.finance.longTermLoan,

@@ -24,7 +24,7 @@ export const CONTROL_STEPS: ControlStep[] = [
   { id: 'q-9', name: '（本项目未启用）', phase: '季度' },
   { id: 'q-10', name: '开始下一批生产', phase: '季度' },
   { id: 'q-11', name: '更新应收账款/应收账款收现', phase: '季度' },
-  { id: 'q-12', name: '出售厂房', phase: '季度' },
+  { id: 'q-12', name: '（本项目未启用：厂房不可交易）', phase: '季度' },
   { id: 'q-13', name: '（本项目未启用）', phase: '季度' },
   { id: 'q-14', name: '按订单交货', phase: '季度' },
   { id: 'q-15', name: '产品研发投资', phase: '季度' },

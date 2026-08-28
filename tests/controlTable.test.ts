@@ -113,12 +113,11 @@ describe('空白行/空白格填充', () => {
 
   it('季度行：无事件的四个季度格全部填 —', () => {
     const table = rows(1, [], []);
-    const disabledRows = table.filter(r => r[1] === '（本项目未启用）');
-    expect(disabledRows).toHaveLength(2);
+    const disabledRows = table.filter(r => r[1].startsWith('（本项目未启用'));
+    expect(disabledRows).toHaveLength(3);
     disabledRows.forEach(r => {
       expect(r.slice(2)).toEqual(['—', '—', '—', '—']);
     });
-    expect(table.find(r => r[1] === '出售厂房')!.slice(2)).toEqual(['—', '—', '—', '—']);
     expect(table.find(r => r[1].includes('更新应付账款'))!.slice(2)).toEqual(['—', '—', '—', '—']);
   });
 

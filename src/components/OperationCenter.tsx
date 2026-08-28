@@ -1,5 +1,5 @@
 'use client';
-import React from 'react';
+import React, { useState } from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
 import { buildYearControlTable, toCSV } from '../utils/controlTable';
 import { FinancialLogRecord, SaveFile as EnterpriseSaveFile } from '../types/enterprise';
@@ -456,7 +456,7 @@ const OPERATION_STEPS: OperationStep[] = [
   { phase: '季度', step: '9', description: '（本项目未启用）' },
   { phase: '季度', step: '10', description: '开始下一批生产' },
   { phase: '季度', step: '11', description: '更新应收账款/应收账款收现' },
-  { phase: '季度', step: '12', description: '出售厂房' },
+  { phase: '季度', step: '12', description: '（本项目未启用：厂房不可交易）' },
   { phase: '季度', step: '13', description: '（本项目未启用）' },
   { phase: '季度', step: '14', description: '按订单交货' },
   { phase: '季度', step: '15', description: '产品研发投资' },
@@ -586,6 +586,52 @@ const OperationOverview: React.FC<{
           </svg>
         </button>
       </div>
+    </div>
+  );
+};
+
+// 其他现金收支情况登记（运行控制表：季度-17）
+const OtherCashFlowForm: React.FC<{
+  onRegister: (description: string, amount: number) => void;
+}> = ({ onRegister }) => {
+  const [description, setDescription] = useState('');
+  const [amount, setAmount] = useState('1');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseFloat(amount);
+    if (!description.trim() || !Number.isFinite(parsed) || parsed === 0) return;
+    onRegister(description.trim(), parsed);
+    setDescription('');
+    setAmount('1');
+  };
+
+  return (
+    <div className="dashboard-card">
+      <h2 className="dashboard-title">其他现金收支情况登记（控制表行17）</h2>
+      <p className="text-sm text-gray-500 mb-3">登记标准流程外的现金收支；支出填负数、收入填正数，单位 M。</p>
+      <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-3">
+        <input
+          type="text"
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          placeholder="收支说明，如：出售废料"
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm flex-1 min-w-[200px]"
+        />
+        <input
+          type="number"
+          step="any"
+          value={amount}
+          onChange={e => setAmount(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-28"
+        />
+        <button
+          type="submit"
+          className="bg-green-500 text-white py-2 px-5 rounded-lg hover:bg-green-600 text-sm font-medium"
+        >
+          登记收支
+        </button>
+      </form>
     </div>
   );
 };
@@ -992,7 +1038,7 @@ const OperationControlTable: React.FC<{
 
 // 主组件
 const OperationCenter: React.FC = () => {
-  const { state, nextQuarter, getSaveFiles } = useEnterpriseStore();
+  const { state, nextQuarter, getSaveFiles, registerOtherCashFlow } = useEnterpriseStore();
   const { operation, production, logistics } = state;
 
   // 获取所有存档
@@ -1019,6 +1065,11 @@ const OperationCenter: React.FC = () => {
           operationLogsCount={operation.operationLogs.length}
           onNextQuarter={nextQuarter}
         />
+      )}
+
+      {/* 其他现金收支登记（控制表行17） */}
+      {!operation.isGameOver && (
+        <OtherCashFlowForm onRegister={registerOtherCashFlow} />
       )}
 
       {/* 按年导出运行控制表（运营中随时可导出已完成年度） */}
