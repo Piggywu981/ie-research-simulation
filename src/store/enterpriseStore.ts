@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord } from '../types/enterprise';
-import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit } from '../utils/rules';
+import { absQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement } from '../utils/rules';
+import { AnnualLedger } from '../types/enterprise';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -292,6 +293,7 @@ export const useEnterpriseStore = create<{
   applyLongTermLoan: () => void;
   applyShortTermLoan: () => void;
   discountReceivable: (amount: number) => void;
+  payTaxes: () => void;
   // 生产操作
   investProductR_D: (product: 'P1' | 'P2' | 'P3' | 'P4', amount: number) => void;
   updateProductionLineStatus: (lineId: string, status: EnterpriseState['production']['factories'][0]['productionLines'][0]['status']) => void;
@@ -696,6 +698,52 @@ export const useEnterpriseStore = create<{
             ...finance,
             accountsReceivable: newAR,
             cash: newCash,
+          },
+          operation: {
+            ...operation,
+            financialLogs: [financialLog, ...operation.financialLogs],
+          },
+        },
+      };
+    }),
+
+  // 支付应付税（年初第1季度，交纳上年度所得税）
+  payTaxes: () =>
+    set((state) => {
+      const { finance, operation } = state.state;
+      if (operation.currentQuarter !== 1) {
+        return { validationError: '应付税金在年初（第1季度）交纳' };
+      }
+      if (finance.taxesPayable <= 0) {
+        return { validationError: '当前无应付税金' };
+      }
+      if (finance.cash < finance.taxesPayable) {
+        return { validationError: `现金不足以支付应付税金${finance.taxesPayable}M，请先贴现或贷款` };
+      }
+      const amount = finance.taxesPayable;
+      const newCash = finance.cash - amount;
+
+      // 记录财务日志（运行控制表：年初-4 支付应付税）
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-tax`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `支付应付税：-所得税${amount}M`,
+        cashChange: -amount,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'b-4',
+      };
+
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          finance: {
+            ...finance,
+            cash: newCash,
+            taxesPayable: 0,
           },
           operation: {
             ...operation,
@@ -1716,43 +1764,74 @@ export const useEnterpriseStore = create<{
 
   deliverOrder: (orderId) =>
     set((state) => {
+      const targetOrder = state.state.marketing.selectedOrders.find((order) => order.id === orderId);
+      if (!targetOrder || targetOrder.isDelivered) {
+        return state;
+      }
+      const stock = state.state.logistics.finishedProducts.find(p => p.type === targetOrder.productType);
+      if (!stock || stock.quantity < targetOrder.quantity) {
+        return { validationError: `成品库存不足：${targetOrder.productType} 需 ${targetOrder.quantity} 个` };
+      }
+
       const newSelectedOrders = state.state.marketing.selectedOrders.map((order) =>
         order.id === orderId ? { ...order, isDelivered: true } : order
       );
-      
-      const deliveredOrder = newSelectedOrders.find((order) => order.id === orderId);
-      if (deliveredOrder) {
-        // 更新成品库存
-        const newFinishedProducts = state.state.logistics.finishedProducts.map((product) =>
-          product.type === deliveredOrder.productType
-            ? { ...product, quantity: product.quantity - deliveredOrder.quantity }
-            : product
-        );
-        
-        // 更新应收账款
-        const newAR = [...state.state.finance.accountsReceivable] as [number, number, number, number];
-        newAR[deliveredOrder.paymentPeriod - 1] += deliveredOrder.totalAmount;
-        
-        return {
-          state: {
-            ...state.state,
-            marketing: {
-              ...state.state.marketing,
-              selectedOrders: newSelectedOrders,
-            },
-            logistics: {
-              ...state.state.logistics,
-              finishedProducts: newFinishedProducts,
-            },
-            finance: {
-              ...state.state.finance,
-              accountsReceivable: newAR,
-            },
+
+      // 更新成品库存
+      const newFinishedProducts = state.state.logistics.finishedProducts.map((product) =>
+        product.type === targetOrder.productType
+          ? { ...product, quantity: product.quantity - targetOrder.quantity }
+          : product
+      );
+
+      // 更新应收账款
+      const newAR = [...state.state.finance.accountsReceivable] as [number, number, number, number];
+      newAR[targetOrder.paymentPeriod - 1] += targetOrder.totalAmount;
+
+      // 年度台账：销售收入 + 直接成本（按成本结转）
+      const cost = unitCost(targetOrder.productType) * targetOrder.quantity;
+      const newLedger: AnnualLedger = {
+        ...state.state.operation.annualLedger,
+        salesRevenue: state.state.operation.annualLedger.salesRevenue + targetOrder.totalAmount,
+        directCosts: state.state.operation.annualLedger.directCosts + cost,
+      };
+
+      // 记录交货日志（运行控制表：季度-14，非现金）
+      const deliveryLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-deliver`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `按订单交货：${targetOrder.quantity}*${targetOrder.productType}(订单总额${targetOrder.totalAmount}M，账期${targetOrder.paymentPeriod}Q)`,
+        cashChange: 0,
+        newCash: state.state.finance.cash,
+        operator: '企业1管理者',
+        stepId: 'q-14',
+      };
+
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          marketing: {
+            ...state.state.marketing,
+            selectedOrders: newSelectedOrders,
           },
-        };
-      }
-      
-      return state;
+          logistics: {
+            ...state.state.logistics,
+            finishedProducts: newFinishedProducts,
+          },
+          finance: {
+            ...state.state.finance,
+            accountsReceivable: newAR,
+          },
+          operation: {
+            ...state.state.operation,
+            annualLedger: newLedger,
+            financialLogs: [deliveryLog, ...state.state.operation.financialLogs],
+          },
+        },
+      };
     }),
 
   // 运营操作
@@ -2200,6 +2279,12 @@ export const useEnterpriseStore = create<{
       const closingYear = state.state.operation.currentYear;
       const yearEndLogs: FinancialLogRecord[] = [];
 
+      // 年度台账：累计本季度自动发生的费用
+      let ledger: AnnualLedger = {
+        ...state.state.operation.annualLedger,
+        interestExpense: state.state.operation.annualLedger.interestExpense + shortSettlement.interest,
+      };
+
       // e-1 支付利息/更新长期贷款：对每笔存续长贷付息、期限递减、到期还本
       let longInterest = 0;
       let longPrincipal = 0;
@@ -2276,6 +2361,7 @@ export const useEnterpriseStore = create<{
       // 10. 支付行政管理费（第四季度扣除1M，运行控制表：季度-16）
       const adminCost = newQuarter === 4 ? 1 : 0;
       if (adminCost > 0) {
+        ledger = { ...ledger, adminFee: ledger.adminFee + adminCost };
         yearEndLogs.push({
           id: `finlog-${Date.now()}-admin`,
           year: newYear,
@@ -2286,6 +2372,64 @@ export const useEnterpriseStore = create<{
           newCash: 0,
           operator: '系统自动',
           stepId: 'q-16',
+        });
+      }
+
+      // 台账累计年末费用（维护/租金/利息）
+      if (isYearEnd) {
+        ledger = {
+          ...ledger,
+          maintenanceFee: ledger.maintenanceFee + maintenanceCost,
+          rentFee: ledger.rentFee + rentCost,
+          interestExpense: ledger.interestExpense + longInterest,
+        };
+      }
+
+      // e-4 计提折旧：净值1/3取整、当年建成不提、净值<3M提1M（非现金费用）
+      let depreciationTotal = 0;
+      if (isYearEnd) {
+        newFactories.forEach((factory, factoryIndex) => {
+          factory.productionLines.forEach((line, lineIndex) => {
+            const dep = depreciationFor(line.netValue, line.builtInYear, closingYear);
+            if (dep > 0) {
+              depreciationTotal += dep;
+              newFactories[factoryIndex].productionLines[lineIndex] = {
+                ...line,
+                netValue: line.netValue - dep,
+              };
+            }
+          });
+        });
+        if (depreciationTotal > 0) {
+          ledger = { ...ledger, depreciation: ledger.depreciation + depreciationTotal };
+          yearEndLogs.push({
+            id: `finlog-${Date.now()}-depreciation`,
+            year: newYear,
+            quarter: newQuarter,
+            timestamp: Date.now(),
+            description: `计提折旧：-折旧${depreciationTotal}M（非现金）`,
+            cashChange: 0,
+            newCash: 0,
+            operator: '系统自动',
+            stepId: 'e-4',
+          });
+        }
+      }
+
+      // 年末结账：利润表、所得税（计入应付税金下年初交纳）、权益结转、报表归档
+      let closingStatement: ReturnType<typeof incomeStatement> | null = null;
+      if (isYearEnd) {
+        closingStatement = incomeStatement(ledger);
+        yearEndLogs.push({
+          id: `finlog-${Date.now()}-closing`,
+          year: newYear,
+          quarter: newQuarter,
+          timestamp: Date.now(),
+          description: `年度结账：税前利润${closingStatement.pretax}M，所得税${closingStatement.tax}M（下年初交纳），净利润${closingStatement.net}M`,
+          cashChange: 0,
+          newCash: 0,
+          operator: '系统自动',
+          stepId: 'e-6',
         });
       }
 
@@ -2360,21 +2504,8 @@ export const useEnterpriseStore = create<{
         operator: '系统自动',
       };
 
-      // 年度结束日志记录（结账，运行控制表：年末-6）
+      // 年度结束日志记录（结账日志已在上方年末序列生成）
       let yearEndLog: FinancialLogRecord | null = null;
-      if (isYearEnd) {
-        yearEndLog = {
-          id: `finlog-${Date.now()}-yearend`,
-          year: newYear,
-          quarter: newQuarter,
-          timestamp: Date.now(),
-          description: `第${closingYear}年结束，年度结账`,
-          cashChange: 0,
-          newCash: finalCash,
-          operator: '系统自动',
-          stepId: 'e-6',
-        };
-      }
       
       // 更新市场开发进度 - 按照季度跟进
       const updatedMarkets = state.state.marketing.markets.map(market => {
@@ -2435,6 +2566,14 @@ export const useEnterpriseStore = create<{
           cashFlowHistory: newCashFlowHistory,
           financialLogs: [...allLogs, ...state.state.operation.financialLogs],
           operationLogs: newOperationLogs,
+          // 年末归档本年度台账与利润表，新年度清零
+          annualLedger: closingStatement ? emptyLedger() : ledger,
+          yearlyLedgers: closingStatement
+            ? { ...state.state.operation.yearlyLedgers, [closingYear]: ledger }
+            : state.state.operation.yearlyLedgers,
+          yearlyIncomeStatements: closingStatement
+            ? { ...state.state.operation.yearlyIncomeStatements, [closingYear]: closingStatement }
+            : state.state.operation.yearlyIncomeStatements,
         },
         finance: {
           ...state.state.finance,
@@ -2449,8 +2588,14 @@ export const useEnterpriseStore = create<{
             ...state.state.finance.shortTermLoan,
             amount: shortOutstanding,
           },
-          // 新年度重置年度净利润
-          annualNetProfit: newYear > state.state.operation.currentYear ? 0 : state.state.finance.annualNetProfit,
+          // 所得税计入应付税金，下年初交纳；净利润年末结转利润留存
+          taxesPayable: closingStatement
+            ? state.state.finance.taxesPayable + closingStatement.tax
+            : state.state.finance.taxesPayable,
+          retainedProfit: closingStatement
+            ? state.state.finance.retainedProfit + closingStatement.net
+            : state.state.finance.retainedProfit,
+          annualNetProfit: closingStatement ? closingStatement.net : state.state.finance.annualNetProfit,
         },
         production: {
           ...state.state.production,

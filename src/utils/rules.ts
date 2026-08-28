@@ -63,15 +63,17 @@ export const settleLongLoansAtYearEnd = <T extends LoanLike>(loans: T[]) => {
 
 // 季初短贷到期结算：到期一次还本付息
 export const settleDueShortLoans = <T extends LoanLike>(loans: T[], absNow: number) => {
-  let due = 0;
+  let principal = 0;
+  let interest = 0;
   const survivors = loans.filter((l) => {
     if (l.kind === 'short' && absNow === l.drawnAbs + l.termQuarters) {
-      due += l.principal * (1 + l.rate);
+      principal += l.principal;
+      interest += l.principal * l.rate;
       return false;
     }
     return true;
   });
-  return { due, survivors };
+  return { due: principal + interest, principal, interest, survivors };
 };
 
 export const TAX_RATE = 0.25;
