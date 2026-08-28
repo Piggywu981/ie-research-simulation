@@ -49,6 +49,15 @@ npm test           # 运行单元测试
 npm run build      # 生产构建
 ```
 
+## 部署（GitHub Pages）
+
+通过 GitHub Actions 自动部署：推送 `main` 分支（或在 Actions 页手动触发 workflow）即自动完成 测试 → 静态导出构建 → 发布。
+
+**首次启用需手动设置一次**：仓库 Settings → Pages → Source 选择 **"GitHub Actions"**，之后推送 main 即可访问 `https://piggywu981.github.io/ie-research-simulation/`。
+
+- 构建命令带 `DEPLOY_TO_PAGES=1` 环境变量启用静态导出与 `basePath`（见 `next.config.js`），本地开发与 `npm start` 不受影响
+- 运营数据存于浏览器 localStorage，不同设备互不相通；跨设备请使用系统内导出的存档/CSV 文件
+
 ## 使用说明
 
 ### 系统初始状态（遵循课程标准）
