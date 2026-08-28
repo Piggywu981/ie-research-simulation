@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger } from '../types/enterprise';
 import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE } from '../utils/rules';
-import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS } from '../config/marketDemand';
+import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS, generateYearOrders } from '../config/marketDemand';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -310,6 +310,7 @@ export const useEnterpriseStore = create<{
   updateFinishedProductInventory: (productType: 'P1' | 'P2' | 'P3' | 'P4', quantity: number) => void;
   // 营销操作
   placeAdvertisement: (amount: number) => void;
+  enterOrderMeeting: () => void;
   selectOrder: (orderId: string) => void;
   deliverOrder: (orderId: string) => void;
   addAvailableOrder: (order: Omit<Order, 'id' | 'isSelected' | 'isDelivered'>) => void;
@@ -1451,56 +1452,130 @@ export const useEnterpriseStore = create<{
     }),
 
   // 营销操作
+  // 投放广告（年初第1季度订货会前；修改后规则：一次投放覆盖本地+区域市场、P1+P2产品）
   placeAdvertisement: (amount) =>
     set((state) => {
+      const { finance, operation, marketing } = state.state;
+      if (operation.currentQuarter !== 1) {
+        return { validationError: '广告投放是年初（第1季度）订货会操作' };
+      }
+      if (amount <= 0) {
+        return { validationError: '广告投放金额须大于0' };
+      }
+      if (finance.cash < amount) {
+        return { validationError: `现金不足：需投放${amount}M` };
+      }
       const adId = `ad-${Date.now()}`;
       const newAd = {
         id: adId,
         amount,
-        period: state.state.operation.currentQuarter,
+        period: operation.currentQuarter,
         markets: ['本地市场', '区域市场'], // 一次性投放覆盖本地和区域市场
         products: ['P1', 'P2'], // 覆盖P1和P2产品
       };
-      
-      // 扣除广告费用
-      const newCash = state.state.finance.cash - amount;
-      
-      // 添加财务日志
+
+      const newCash = finance.cash - amount;
+
+      // 添加财务日志（运行控制表：季度-17 其他现金收支）
       const financialLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-ad`,
-        year: state.state.operation.currentYear,
-        quarter: state.state.operation.currentQuarter,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
         timestamp: Date.now(),
-        description: `投放广告（其他支出），花费${amount}M，覆盖本地和区域市场，产品P1和P2`,
+        description: `-${amount}M(广告费)`,
         cashChange: -amount,
         newCash,
         operator: '企业1管理者',
+        stepId: 'q-17',
       };
-      
+
       // 添加操作日志
       const operationLog = {
         id: `log-${Date.now()}`,
         time: new Date().toLocaleString(),
         operator: '企业1管理者',
         action: '投放广告',
-        dataChange: `投放广告，花费${amount}M，覆盖本地和区域市场，产品P1和P2`,
+        dataChange: `投放广告${amount}M，覆盖本地和区域市场，产品P1和P2（每1M解锁2张可选订单）`,
       };
-      
+
       return {
+        validationError: null,
         state: {
           ...state.state,
           finance: {
-            ...state.state.finance,
+            ...finance,
             cash: newCash,
           },
           marketing: {
-            ...state.state.marketing,
-            advertisements: [...state.state.marketing.advertisements, newAd],
+            ...marketing,
+            advertisements: [...marketing.advertisements, newAd],
           },
           operation: {
-            ...state.state.operation,
-            operationLogs: [operationLog, ...state.state.operation.operationLogs],
-            financialLogs: [financialLog, ...state.state.operation.financialLogs],
+            ...operation,
+            annualLedger: { ...operation.annualLedger, adFee: operation.annualLedger.adFee + amount },
+            operationLogs: [operationLog, ...operation.operationLogs],
+            financialLogs: [financialLog, ...operation.financialLogs],
+          },
+        },
+      };
+    }),
+
+  // 参加订货会（年初第1季度）：按广告投入生成当年可选订单池
+  enterOrderMeeting: () =>
+    set((state) => {
+      const { operation, marketing } = state.state;
+      if (operation.currentQuarter !== 1) {
+        return { validationError: '订货会在年初（第1季度）召开' };
+      }
+      const availableMarkets = marketing.markets
+        .filter(m => m.status === 'available')
+        .map(m => m.type);
+      const qualifiedProducts = ['P1'];
+      if (state.state.production.productRD.P2.completed) qualifiedProducts.push('P2');
+      const adAmount = marketing.advertisements
+        .filter(ad => ad.period === 1)
+        .reduce((s, ad) => s + ad.amount, 0);
+
+      const generated = generateYearOrders(
+        Math.min(operation.currentYear, 4) as 1 | 2 | 3 | 4,
+        availableMarkets,
+        qualifiedProducts,
+        adAmount,
+      );
+
+      const newOrders: Order[] = generated.map((o, i) => ({
+        id: `order-${Date.now()}-${i}`,
+        productType: o.productType,
+        quantity: o.quantity,
+        unitPrice: o.unitPrice,
+        totalAmount: o.totalAmount,
+        paymentPeriod: o.paymentPeriod,
+        market: o.market,
+        isSelected: false,
+        isDelivered: false,
+      }));
+
+      const operationLog = {
+        id: `log-${Date.now()}`,
+        time: new Date().toLocaleString(),
+        operator: '企业1管理者',
+        action: '参加订货会',
+        dataChange: adAmount > 0
+          ? `生成${newOrders.length}张可选订单（本年度广告${adAmount}M）`
+          : '尚未投放广告，未解锁可选订单（每1M广告解锁2张）',
+      };
+
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          marketing: {
+            ...marketing,
+            availableOrders: newOrders,
+          },
+          operation: {
+            ...operation,
+            operationLogs: [operationLog, ...operation.operationLogs],
           },
         },
       };
