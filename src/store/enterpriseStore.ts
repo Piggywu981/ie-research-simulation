@@ -2166,13 +2166,6 @@ export const useEnterpriseStore = create<{
       const closingYear = state.state.operation.currentYear;
       const yearEndLogs: FinancialLogRecord[] = [];
 
-      // 年度台账：累计本季度自动发生的费用
-      let ledger: AnnualLedger = {
-        ...state.state.operation.annualLedger,
-        interestExpense: state.state.operation.annualLedger.interestExpense + shortSettlement.interest,
-        rdFee: state.state.operation.annualLedger.rdFee + rdInvestment,
-      };
-
       // e-1 支付利息/更新长期贷款：对每笔存续长贷付息、期限递减、到期还本
       let longInterest = 0;
       let longPrincipal = 0;
@@ -2246,10 +2239,9 @@ export const useEnterpriseStore = create<{
         }
       }
 
-      // 10. 支付行政管理费（第四季度扣除1M，运行控制表：季度-16）
+      // 10. 支付行政管理费（进入第4季度时扣除1M，运行控制表：季度-16）
       const adminCost = newQuarter === 4 ? 1 : 0;
       if (adminCost > 0) {
-        ledger = { ...ledger, adminFee: ledger.adminFee + adminCost };
         yearEndLogs.push({
           id: `finlog-${Date.now()}-admin`,
           year: newYear,
@@ -2261,16 +2253,6 @@ export const useEnterpriseStore = create<{
           operator: '系统自动',
           stepId: 'q-16',
         });
-      }
-
-      // 台账累计年末费用（维护/租金/利息）
-      if (isYearEnd) {
-        ledger = {
-          ...ledger,
-          maintenanceFee: ledger.maintenanceFee + maintenanceCost,
-          rentFee: ledger.rentFee + rentCost,
-          interestExpense: ledger.interestExpense + longInterest,
-        };
       }
 
       // e-4 计提折旧：净值1/3取整、当年建成不提、净值<3M提1M（非现金费用）
@@ -2289,7 +2271,6 @@ export const useEnterpriseStore = create<{
           });
         });
         if (depreciationTotal > 0) {
-          ledger = { ...ledger, depreciation: ledger.depreciation + depreciationTotal };
           yearEndLogs.push({
             id: `finlog-${Date.now()}-depreciation`,
             year: newYear,
@@ -2304,10 +2285,26 @@ export const useEnterpriseStore = create<{
         }
       }
 
-      // 年末结账：利润表、所得税（计入应付税金下年初交纳）、权益结转、报表归档
+      // 年度台账：
+      // 年末过渡时，本季自动项目（短贷息/研发/开工加工费）归属新年度，
+      // 年末结算项目（维护/租金/长贷息/折旧）归属收尾年度
+      let ledger: AnnualLedger;
+      let closingLedger: AnnualLedger | null = null;
       let closingStatement: ReturnType<typeof incomeStatement> | null = null;
       if (isYearEnd) {
-        closingStatement = incomeStatement(ledger);
+        closingLedger = {
+          ...state.state.operation.annualLedger,
+          maintenanceFee: state.state.operation.annualLedger.maintenanceFee + maintenanceCost,
+          rentFee: state.state.operation.annualLedger.rentFee + rentCost,
+          interestExpense: state.state.operation.annualLedger.interestExpense + longInterest,
+          depreciation: state.state.operation.annualLedger.depreciation + depreciationTotal,
+        };
+        closingStatement = incomeStatement(closingLedger);
+        ledger = {
+          ...emptyLedger(),
+          rdFee: rdInvestment,
+          interestExpense: shortSettlement.interest,
+        };
         yearEndLogs.push({
           id: `finlog-${Date.now()}-closing`,
           year: newYear,
@@ -2319,6 +2316,13 @@ export const useEnterpriseStore = create<{
           operator: '系统自动',
           stepId: 'e-6',
         });
+      } else {
+        ledger = {
+          ...state.state.operation.annualLedger,
+          interestExpense: state.state.operation.annualLedger.interestExpense + shortSettlement.interest,
+          rdFee: state.state.operation.annualLedger.rdFee + rdInvestment,
+          adminFee: state.state.operation.annualLedger.adminFee + adminCost,
+        };
       }
 
       // 总现金支出（所得税不在结账时扣：计入应付税金、下年初交纳）
@@ -2455,9 +2459,9 @@ export const useEnterpriseStore = create<{
           financialLogs: [...allLogs, ...state.state.operation.financialLogs],
           operationLogs: newOperationLogs,
           // 年末归档本年度台账与利润表，新年度清零
-          annualLedger: closingStatement ? emptyLedger() : ledger,
-          yearlyLedgers: closingStatement
-            ? { ...state.state.operation.yearlyLedgers, [closingYear]: ledger }
+          annualLedger: ledger,
+          yearlyLedgers: closingLedger
+            ? { ...state.state.operation.yearlyLedgers, [closingYear]: closingLedger }
             : state.state.operation.yearlyLedgers,
           yearlyIncomeStatements: closingStatement
             ? { ...state.state.operation.yearlyIncomeStatements, [closingYear]: closingStatement }
