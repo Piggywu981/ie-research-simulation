@@ -1,0 +1,159 @@
+# 厂房交易（控制表 q-12 / e-3）设计规格
+
+日期：2026-10-03
+状态：已与用户对齐方向，待用户复核本文
+关联：`docs/superpowers/specs/2026-08-28-erp-sandbox-restart-design.md`（下称"重启规格"）
+
+## 1. 背景与目标
+
+运行控制表的 30 行里有 3 行长期停在"（本项目未启用）"占位文案上：季度第 9、12、13 行。本次把第 12 行与年末第 3 行的**厂房交易**做成真实功能，另外两行按课程约束**确认永久禁用**并把理由写进表格。
+
+目标：学生能在模拟中做出"买断租厂/新购厂房/出售自有厂房回笼资金"的资产决策，且这些决策在现金、应收、资产账面与运行控制表上口径一致、可导出。
+
+## 2. 规格来源与优先级
+
+1. `directions/创新创业实践（2）/用友ERP沙盘模拟说明文件.md:200-204`——厂房参数表与交易规则：大厂房买价 40M/租金 5M·年/售价 40M（计入 4Q 应收）/容量 6 条线；小厂房 30M/3M/30M/4 条线；年底决定购买、租赁或出售；出售厂房收入计入 4Q 应收款、当期不直接到账；购买后买价计入厂房价值；**厂房不提折旧**。
+2. `directions/创新创业实践（2）/未命名.md:25-41`——控制表行位：季度第 12 行为「出售厂房」，年末第 3 行为「支付租金/购买厂房」。
+3. `directions/创新创业实践（2）/《创新实践及科研训练》沙盘模拟仿真开发提示词.md:9,89`——仅允许修改广告投放规则；**删除所有与其他企业（A组/B组/C组）相关的设定、数据与代码**。
+4. 冲突处理：来源 1 的"年底决定…出售"与来源 2 把出售列为**季度行**相互矛盾。本次**以控制表行位为准**（季中可出售），列为自定修改项，见第 9 节。
+
+## 3. 现状与差距（代码证据）
+
+| 位置 | 现状 | 差距 |
+|---|---|---|
+| `src/types/enterprise.ts:100-107` | `Factory` 只有 `type/purchasePrice/capacity/productionLines` | 无权属字段，自有/租赁全靠注释区分 |
+| `src/store/enterpriseStore.ts:62,91` | 大厂房 `purchasePrice: 40`、小厂房 `30`，靠注释标"自有/租赁" | 同上 |
+| `src/store/enterpriseStore.ts:2359-2366` | e-3 租金按 `type === 'small'` 硬编码 3M/年 | 改权属后须按持有状态收费；大厂房租金 5M/年 无处发生 |
+| `src/store/enterpriseStore.ts:42` | `accountsReceivable: [0, 0, 0, 15]`，索引 = 账期 - 1（`deliverOrder` 于 `:1796` 按此写入） | 厂房出售款可直接复用该数组与既有季初收现逻辑 |
+| `src/utils/controlTable.ts:24,27,28` | q-9/q-12/q-13 行名为"（本项目未启用…）" | 本次 q-12 改回真名，q-9/q-13 改为写明理由 |
+| `src/components/OperationCenter.tsx:456-460` | 硬编码了同一份 30 行步骤表 | 与 `CONTROL_STEPS` 双份维护，改文案必然漏改 |
+| 全局 | 无动态资产负债表，仅 `enterpriseStore.ts:11` 一行初始注释 | 买 40M 厂房只会看到现金减少，看不出资产变动 |
+
+## 4. 设计
+
+### 4.1 数据模型
+
+```ts
+export type FactoryHolding = 'owned' | 'leased' | 'none';
+// Factory 增加
+holding: FactoryHolding;
+// 本年度（年初时点）是否处于租赁——租金结算只认这个快照，不认实时 holding
+leasedThisYear: boolean;
+```
+
+初始状态：`factory-1`（大）= `owned` + `leasedThisYear: false`，`factory-2`（小）= `leased` + `leasedThisYear: true`。`holding === 'none'` 的槽位仍在 `factories` 数组里（保留 `capacity`/`purchasePrice` 元数据），只是不可放置生产线，因此 `addProductionLine` 与生产线相关遍历需按 `holding !== 'none'` 过滤。
+
+**为什么必须有 `leasedThisYear`**：e-3 的租金结算发生在"Q4 → 次年 Q1"那次季度推进内部，而玩家是在 Q4 内先点按钮改变 `holding` 再推进的。若按实时 `holding` 计租会产生两个错：年末新租被多收当年一年租金；年末买断则因 `holding` 提前变为 `owned` 而**漏收**当年租金（凭空少付 3M）。快照口径与 `Market.investedThisYear` 是同一个模式，年末先按旧值结算收尾年度，跨年时再统一刷新。
+
+不引入新的资产账本字段。"土地和建筑"一律派生：
+
+```ts
+// src/utils/rules.ts
+export const landAndBuildings = (factories: { holding: string; purchasePrice: number }[]) =>
+  factories.filter(f => f.holding === 'owned').reduce((s, f) => s + f.purchasePrice, 0);
+```
+
+初始派生值 = 40M，与课程资产负债表一致，无需额外校验。
+
+### 4.2 三个 store action
+
+| action | 时机 | 前置校验 | 资金/账务效果 | 日志 stepId |
+|---|---|---|---|---|
+| `buyFactory(id)` | 仅 Q4 年末 | `holding !== 'owned'`；现金 ≥ 买价。**不要求腾空**：`leased → owned` 是买断，厂房内生产线照常保留；`none → owned` 槽位本就为空 | 现金 −买价；不进利润表 | `e-3` |
+| `leaseFactory(id)` | 仅 Q4 年末 | `holding === 'none'`（`owned`/`leased` 均拒绝） | 只改 `holding`，不动 `leasedThisYear`，故**当年不计租、次年 e-3 首次计租** | `e-3` |
+| `sellFactory(id)` | Q1–Q4 任意季度 | `holding === 'owned'`；**厂房内生产线数必须为 0**（在建/停产/闲置都算占用，需先变卖或转走） | 现金变动 0，售价计入 `accountsReceivable[3]`（4Q 账期），由既有季初收现逻辑到账；不进利润表 | `q-12` |
+
+即"腾空"只有出售一侧要求，购买与租赁都不必腾空——买断是权属变更、不是资产转移，若强制腾空的化初始小厂房（上有 1 条全自动线）将永远无法买断。
+
+共同点：均受 `isPaused` 拦截（沿用现有动作开头那段判断）；校验失败只写 `validationError`，不抛异常。
+
+`leased` 槽位不能"出售"（不拥有产权），提示语指向"买断后再出售"。退租不提供——课程只给了"购买/租赁/出售"三种年末决策，且租中的槽位只有初始小厂房（见第 9 节假设 6）。
+
+日志文案：
+- 购买：`购买厂房：企业1小厂房 -30M`
+- 新租：`新租厂房：企业1大厂房（租金5M/年）`
+- 出售：`出售厂房：企业1大厂房 +40M（计入4Q应收款）`
+
+### 4.3 租金结算改造
+
+`nextQuarter` 的 e-3 段（`enterpriseStore.ts:2359`）由"按 type 硬编码 3M"改为：
+
+```ts
+const RENT_BY_TYPE = { large: 5, small: 3 };
+factory.rentFee = factories
+  .filter(f => f.leasedThisYear)
+  .reduce((s, f) => s + RENT_BY_TYPE[f.type], 0);
+```
+
+租金仍归入年度台账 `rentFee`（综合费用），年末结账口径不变（`enterpriseStore.ts:2436`）。跨年刷新规则：Q4→次年 Q1 的收尾结算**之后**，对每个槽位置 `leasedThisYear = (holding === 'leased')`——顺序不能颠倒，否则又变回实时口径。由此：年末买断仍需付当年租金（当年确实用过），年末新租从次年起计租，卖掉自有厂房后该槽位快照自然转 false。
+
+### 4.4 控制表与步骤表单一来源
+
+- `CONTROL_STEPS`：`q-12` 名改回课程原文「出售厂房」（租赁与购买都归 `e-3`），`q-9` 改为「（单企业无交易对手：向其他企业购买/出售原材料，依本文 §2 来源 3 不启用）」，`q-13` 同理改为成品版；`e-3` 名保持「支付租金/购买厂房」。
+- `OperationCenter.tsx:456-460` 删除本地硬编码步骤表，改为 `import { CONTROL_STEPS } from '../utils/controlTable'`，由 `phase`/`name` 渲染。此举同时消掉一份会漏改的副本，属本次改动直接服务范围内。
+
+### 4.5 UI
+
+`ProductionCenter.tsx` 每个厂房卡片：
+- 权属徽标：自有 / 租赁 / 未持有。
+- 按当前状态与季度给出按钮：非 Q4 时购买/租赁按钮禁用并提示"年末决策"；厂房内有生产线时仅**出售**按钮禁用并提示"需先腾空该厂房内的生产线"。
+- 卡片顶部展示派生值「土地和建筑：N M」。
+
+不新增页面、不引入新依赖。
+
+### 4.6 存档迁移
+
+- `SaveFile.version` 2 → 3；字面量 `version: 2` 出现在两处——`saveGame`（`:362`）与 `autoSaveGame`（`:392`），一并改。
+- 迁移落在现有 `migrateStateV1`（`enterpriseStore.ts:211`，模块内私有、仅 `loadGame` 于 `:412` 无条件调用）内：缺失时按 `factory-1 → owned` + `leasedThisYear: false`、`factory-2 → leased` + `leasedThisYear: true`、其余 → `owned` + `false` 补齐，函数改名 `migrateState` 以匹配其"多版本共用"的实际角色。
+- `loadGame` 的提示文案（`:418-420`）改为对 `version < 3` 提示"旧存档已迁移至 v3，建议重置开新局"。
+
+## 5. 数据流
+
+UI 按钮 → `buyFactory/leaseFactory/sellFactory`（校验时机 + 权属 + 腾空 + 现金）→ 改 `Factory.holding` + 现金或应收 + `FinancialLogRecord(stepId)` → `nextQuarter` 的 e-3 按 `holding` 收租、季初 q-11 收厂房应收 → 控制表导出器按 `stepId` 落到 `q-12`/`e-3` 单元格。利润表与年度台账不因本次交易产生新科目。
+
+## 6. 错误处理
+
+全部走 `validationError` + 页头红色提示（现有模式）：
+
+- `厂房购买与租赁仅在年末（第4季度）办理`
+- `现金不足：购买企业1小厂房需 30M，当前现金 N M`
+- `该厂房仍有 X 条生产线，需先腾空后才能出售`
+- `企业1大厂房为自有厂房，无需重复购买`
+- `租赁中的厂房不可出售，请先买断`
+- 暂停态统一提示"请先继续运营"
+
+不做静默降级：任何一条不满足即整笔拒绝，状态不变。
+
+## 7. 测试策略
+
+新增 `tests/factory.test.ts`：
+
+1. 初始派生：`landAndBuildings` = 40M；小厂房计租 3M。
+2. `buyFactory` 于 Q2 被拒；Q4 成功，现金 −30M、`holding` 变 `owned`、次年 e-3 不再计该厂房租金。
+3. 现金不足拒绝且状态零变化。
+4. 厂房内有生产线时：`sellFactory` 被拒且状态零变化，`buyFactory`（买断）**照常成功**且生产线仍在。
+5. `sellFactory` 于 Q2 成功：现金不变、`accountsReceivable[3] += 40`、日志 `stepId === 'q-12'` 且 `cashChange === 0`。
+6. 出售后第 4 个季度初收到该笔应收（与既有订单应收混计不丢失）。
+7. `leaseFactory` 后当年不计租、次年计 5M；反之**年末买断小厂房仍照收当年 3M 租金**（`leasedThisYear` 快照在跨年刷新时才转 false）——这条是防资金泄漏的关键断言。
+8. 出售的厂房款可被 `discountReceivable` 按 7:1 贴现。注意贴现按四档总额校验、**从最早账期起扣**（`enterpriseStore.ts:595,603`），厂房款在 `[3]` 档最后被动用，且与其他应收混池无法区分来源——本设计接受该口径，不引入"应收款来源"字段。
+9. 控制表：脚本化"年末买、次年卖"，断言 `e-3` 与 `q-12` 单元格文本。
+10. v2 存档迁移补齐 `holding`/`leasedThisYear` 且不破坏既有 86 个用例。
+
+UI 不做自动化测试，按 `npm run build` + 手工冒烟（买断小厂房、卖掉大厂房、导出控制表）。
+
+## 8. 范围外
+
+- 资产负债表整表可视化（本次只出一个派生数字）。
+- 厂房的多槽位扩张（不能同时持有两个大厂房）。
+- 退租、厂房抵押、土地增值税/资产处置损益。
+- q-9、q-13（向其他企业交易原料/成品）——见第 9 节假设 5，确认为永久禁用。
+
+## 9. 假设（用户已认可，若复核推翻请指出编号）
+
+1. **出售季中可做、购买与租赁只在年末**（来源 1 与来源 2 冲突时取控制表行位）。
+2. 大、小厂房各只有一个固定槽位，不允许持有第二个同类厂房。
+3. 只有**出售**要求腾空；购买与租赁不必腾空（买断只是权属变更，线上在制品与生产线保留）。不做"厂房连生产线打包转让"。
+4. 出售款挂应收账款 4Q 档，因此**可被 7:1 贴现**。
+5. q-9/q-13 永久禁用，行名改为写明理由（引用提示词 5.1），不再改回。
+6. 不提供退租：`leased` 只能走向 `owned`。
+7. 租赁生效时点：**年末新租从次年起计租；年末买断仍需付当年租金**（经 §4.3 的 `leasedThisYear` 快照保证）。原稿的"当年不收租"表述已按此更正。
