@@ -180,3 +180,67 @@ describe('出售厂房', () => {
     expect(store().validationError).toContain('未被持有');
   });
 });
+
+describe('租金快照口径', () => {
+  // 必须用 startsWith 精确锁定系统自动租金日志：玩家的新租日志同样含"租金"二字
+  // 年末结算日志统一重映射到「收尾年度的第4季度」（见 nextQuarter 的 remappedYearEndLogs），
+  // 因此第 N 年的租金日志 year === N，而不是过渡后的 N+1。
+  const rentLogs = () => store().state.operation.financialLogs
+    .filter(l => l.stepId === 'e-3' && l.description.startsWith('支付厂房租金'));
+
+  it('年末买断小厂房，收尾年度仍收当年 3M 租金', () => {
+    useEnterpriseStore.setState({ state: { ...store().state, finance: { ...store().state.finance, cash: 60 } } });
+    advance(3);
+    store().buyFactory('factory-2');
+    store().nextQuarter(); // 第1年Q4 → 第2年Q1，此处结算第1年租金
+    expect(rentLogs().some(l => l.year === 1 && l.description.includes('3M'))).toBe(true);
+  });
+
+  it('年末新租大厂房，收尾年度不计其租金，次年计 5M', () => {
+    useEnterpriseStore.setState({
+      state: {
+        ...store().state,
+        production: { ...store().state.production, factories: store().state.production.factories.map(f => f.id === 'factory-1' ? { ...f, holding: 'none' as const, productionLines: [] } : f) },
+        finance: { ...store().state.finance, cash: 60 },
+      },
+    });
+    advance(3);
+    store().leaseFactory('factory-1');
+    store().nextQuarter();
+    const year1 = rentLogs().find(l => l.year === 1);
+    expect(year1?.description).toBe('支付厂房租金：-厂房租金3M'); // 新租的大厂房本年不计
+    useEnterpriseStore.setState({ state: { ...store().state, finance: { ...store().state.finance, cash: 60 } } });
+    advance(4);
+    const year2 = rentLogs().find(l => l.year === 2);
+    expect(year2?.description).toBe('支付厂房租金：-厂房租金8M'); // 大 5M + 小 3M
+  });
+
+  it('买断的厂房卖掉后，次年不再收其租金（快照由跨年刷新清零，不由 sellFactory 清零）', () => {
+    // 真实路径：第1年Q4买断小厂房 → 结算收当年3M → 跨年刷新把快照转 false
+    // → 第2年Q4出售 → 第2年结算租金为 0。
+    // 不变量：只有跨年刷新写 leasedThisYear；sellFactory 不得清零，否则"年末买断后同年卖出"
+    // 会把当年租金一起免掉（§9-7 要防的漏收）。
+    // 小厂房需先清空生产线，否则 sellFactory 会以"需先腾空"拒绝。
+    useEnterpriseStore.setState({
+      state: {
+        ...store().state,
+        finance: { ...store().state.finance, cash: 60 },
+        production: {
+          ...store().state.production,
+          factories: store().state.production.factories.map(f =>
+            f.id === 'factory-2' ? { ...f, productionLines: [] } : f
+          ),
+        },
+      },
+    });
+    advance(3);
+    store().buyFactory('factory-2');
+    store().nextQuarter(); // 第1年Q4 → 第2年Q1：结算第1年租金
+    expect(rentLogs().find(l => l.year === 1)?.description).toBe('支付厂房租金：-厂房租金3M');
+    advance(3); // 第2年Q4
+    expect(store().state.production.factories[1].leasedThisYear).toBe(false);
+    store().sellFactory('factory-2');
+    store().nextQuarter(); // 第2年Q4 → 第3年Q1：该槽位已出售，租金归零
+    expect(rentLogs().find(l => l.year === 2)?.description).toBe('支付厂房租金：-厂房租金0M');
+  });
+});

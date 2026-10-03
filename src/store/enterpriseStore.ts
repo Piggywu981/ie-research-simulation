@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger } from '../types/enterprise';
-import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE, RENT_BY_TYPE } from '../utils/rules';
+import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE, RENT_BY_TYPE, annualRent } from '../utils/rules';
 import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS, generateYearOrders } from '../config/marketDemand';
 
 // 全局状态，用于跟踪重置次数
@@ -2515,25 +2515,21 @@ export const useEnterpriseStore = create<{
         }
       }
 
-      // e-3 支付租金/购买厂房：小厂房租赁，年末付租金3M/年（大厂房自有）
+      // e-3 支付租金/购买厂房：按年初租赁快照收取（年末买断仍欠当年租金，年末新租次年起计）
       let rentCost = 0;
       if (isYearEnd) {
-        state.state.production.factories.forEach(factory => {
-          if (factory.type === 'small') rentCost += 3;
+        rentCost = annualRent(state.state.production.factories);
+        yearEndLogs.push({
+          id: `finlog-${Date.now()}-rent`,
+          year: newYear,
+          quarter: newQuarter,
+          timestamp: Date.now(),
+          description: `支付厂房租金：-厂房租金${rentCost}M`,
+          cashChange: -rentCost,
+          newCash: 0,
+          operator: '系统自动',
+          stepId: 'e-3',
         });
-        if (rentCost > 0) {
-          yearEndLogs.push({
-            id: `finlog-${Date.now()}-rent`,
-            year: newYear,
-            quarter: newQuarter,
-            timestamp: Date.now(),
-            description: `支付厂房租金：-厂房租金${rentCost}M`,
-            cashChange: -rentCost,
-            newCash: 0,
-            operator: '系统自动',
-            stepId: 'e-3',
-          });
-        }
       }
 
       // 10. 支付行政管理费（进入第4季度时扣除1M，运行控制表：季度-16）
@@ -2579,6 +2575,13 @@ export const useEnterpriseStore = create<{
             operator: '系统自动',
             stepId: 'e-4',
           });
+        }
+      }
+
+      // 年末结算已读取旧快照，此后方可刷新各槽位的该年度租赁标记
+      if (isYearEnd) {
+        for (let i = 0; i < newFactories.length; i++) {
+          newFactories[i] = { ...newFactories[i], leasedThisYear: newFactories[i].holding === 'leased' };
         }
       }
 
