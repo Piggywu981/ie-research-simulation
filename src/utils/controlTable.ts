@@ -21,11 +21,11 @@ export const CONTROL_STEPS: ControlStep[] = [
   { id: 'q-6', name: '下原料订单', phase: '季度' },
   { id: 'q-7', name: '更新生产/完工入库', phase: '季度' },
   { id: 'q-8', name: '投资新生产线/变卖生产线/生产线转产', phase: '季度' },
-  { id: 'q-9', name: '（本项目未启用）', phase: '季度' },
+  { id: 'q-9', name: '（单企业无交易对手：向其他企业购买/出售原材料，不启用）', phase: '季度' },
   { id: 'q-10', name: '开始下一批生产', phase: '季度' },
   { id: 'q-11', name: '更新应收账款/应收账款收现', phase: '季度' },
-  { id: 'q-12', name: '（本项目未启用：厂房不可交易）', phase: '季度' },
-  { id: 'q-13', name: '（本项目未启用）', phase: '季度' },
+  { id: 'q-12', name: '出售厂房', phase: '季度' },
+  { id: 'q-13', name: '（单企业无交易对手：向其他企业购买/出售成品，不启用）', phase: '季度' },
   { id: 'q-14', name: '按订单交货', phase: '季度' },
   { id: 'q-15', name: '产品研发投资', phase: '季度' },
   { id: 'q-16', name: '支付行政管理费', phase: '季度' },
@@ -62,6 +62,7 @@ const quarterStartSnapshot = (saves: SaveFile[], year: number, quarter: number):
  * - q-1 盘点：优先用存档快照 (现金,原料,成品)；无快照时用盘点日志
  * - q-20 结余：该季结束后现金（下一季度快照现金或本季日志 newCash）
  * - q-18/q-19：本季日志现金收/支合计
+ * - q-12 出售厂房：售价进应收款不进现金，按描述串填格（默认分支会退化成 ✓）
  * - 年初/年末行：数据填在季度1列
  */
 export function buildYearControlTable(
@@ -108,6 +109,12 @@ export function buildYearControlTable(
           } else {
             row[2 + q - 1] = joinLogs(cellLogs);
           }
+          break;
+        }
+        case 'q-12': {
+          // 出售厂房售价进 4Q 应收款、不进现金（cashChange 为 0），默认分支会退化成 ✓，
+          // 而售价明细正是这一行的内容：直接填日志描述串。
+          row[2 + q - 1] = joinLogs(cellLogs);
           break;
         }
         case 'q-18': {

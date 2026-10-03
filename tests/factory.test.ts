@@ -1,6 +1,7 @@
 import { beforeEach, describe, it, expect } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
 import { landAndBuildings, annualRent, RENT_BY_TYPE } from '../src/utils/rules';
+import { buildYearControlTable } from '../src/utils/controlTable';
 
 const store = () => useEnterpriseStore.getState();
 const resetStore = () => {
@@ -309,5 +310,24 @@ describe('租金快照口径', () => {
     expect(store().state.production.factories[1].leasedThisYear).toBe(true);
     store().nextQuarter(); // 第1年Q4 → 第2年Q1：按快照结算第1年租金
     expect(rentLogs().find(l => l.year === 1)?.description).toBe('支付厂房租金：-厂房租金3M');
+  });
+});
+
+describe('控制表导出', () => {
+  it('出售厂房落在 q-12 列、购买落在 e-3 列', () => {
+    useEnterpriseStore.setState({
+      state: {
+        ...store().state,
+        finance: { ...store().state.finance, cash: 60 },
+        production: { ...store().state.production, factories: store().state.production.factories.map(f => f.id === 'factory-1' ? { ...f, productionLines: [] } : f) },
+      },
+    });
+    store().sellFactory('factory-1');
+    advance(3);
+    store().buyFactory('factory-2');
+    const { logs, saves } = { logs: store().state.operation.financialLogs, saves: store().getSaveFiles() };
+    const table = buildYearControlTable(1, logs, saves);
+    expect(table.find(r => r[1] === '出售厂房')![2]).toContain('+40M（计入4Q应收款）');
+    expect(table.find(r => r[1] === '支付租金/购买厂房')![2]).toContain('购买厂房');
   });
 });

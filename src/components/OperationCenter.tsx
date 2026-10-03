@@ -1,7 +1,7 @@
 'use client';
 import React, { useState } from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
-import { buildYearControlTable, toCSV } from '../utils/controlTable';
+import { buildYearControlTable, toCSV, CONTROL_STEPS } from '../utils/controlTable';
 import { FinancialLogRecord, SaveFile as EnterpriseSaveFile } from '../types/enterprise';
 
 // 操作步骤类型定义
@@ -439,39 +439,12 @@ const formatTotal = (total: number, isIncome: boolean): string => {
   return `${isIncome ? (total > 0 ? '+' : '') : ''}${total}M`;
 };
 
-// 操作步骤数据
-const OPERATION_STEPS: OperationStep[] = [
-  { phase: '年初', step: '', description: '新年度规划会议' },
-  { phase: '年初', step: '', description: '参加订货会/登记销售订单' },
-  { phase: '年初', step: '', description: '制定新年度计划' },
-  { phase: '年初', step: '', description: '支付应付税' },
-  { phase: '季度', step: '1', description: '季初现金盘点（请填写库存数量）' },
-  { phase: '季度', step: '2', description: '更新短贷/还本付息' },
-  { phase: '季度', step: '3', description: '申请短期贷款' },
-  { phase: '季度', step: '4', description: '更新应付账款/归还应付账款' },
-  { phase: '季度', step: '5', description: '原材料入库/更新原材料单' },
-  { phase: '季度', step: '6', description: '下原料订单' },
-  { phase: '季度', step: '7', description: '更新生产/完工入库' },
-  { phase: '季度', step: '8', description: '投资新生产线/变卖生产线/生产线转产' },
-  { phase: '季度', step: '9', description: '（本项目未启用）' },
-  { phase: '季度', step: '10', description: '开始下一批生产' },
-  { phase: '季度', step: '11', description: '更新应收账款/应收账款收现' },
-  { phase: '季度', step: '12', description: '（本项目未启用：厂房不可交易）' },
-  { phase: '季度', step: '13', description: '（本项目未启用）' },
-  { phase: '季度', step: '14', description: '按订单交货' },
-  { phase: '季度', step: '15', description: '产品研发投资' },
-  { phase: '季度', step: '16', description: '支付行政管理费' },
-  { phase: '季度', step: '17', description: '其他现金收支情况登记' },
-  { phase: '季度', step: '18', description: '入库（收入）数量合计' },
-  { phase: '季度', step: '19', description: '出库（现金支出）合计' },
-  { phase: '季度', step: '20', description: '本季库存（现金）结余数量' },
-  { phase: '年末', step: '', description: '支付利息/更新长期贷款/申请长期贷款' },
-  { phase: '年末', step: '', description: '支付设备维护费' },
-  { phase: '年末', step: '', description: '支付租金/购买厂房' },
-  { phase: '年末', step: '', description: '计提折旧' },
-  { phase: '年末', step: '', description: '新市场开拓/ISO资格认证投资' },
-  { phase: '年末', step: '', description: '结账' },
-];
+// 操作步骤数据：与导出器共用 CONTROL_STEPS，避免两份行名各改一处
+const OPERATION_STEPS: OperationStep[] = CONTROL_STEPS.map(s => ({
+  phase: s.phase,
+  step: s.phase === '季度' ? s.id.slice(2) : '',
+  description: s.name,
+}));
 
 // 操作记录组件
 const OperationLogs: React.FC<{
