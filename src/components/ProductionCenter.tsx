@@ -2,10 +2,11 @@
 import React, { useState } from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
 import { Factory, ProductionLine } from '../types/enterprise';
+import { landAndBuildings, RENT_BY_TYPE } from '../utils/rules';
 
 const ProductionCenter: React.FC = () => {
-  const { state, investProductR_D, addProductionLine, removeProductionLine, cancelProduction, startProduction, convertProductionLine } = useEnterpriseStore();
-  const { production, finance, productionLineLimits } = state;
+  const { state, investProductR_D, addProductionLine, removeProductionLine, cancelProduction, startProduction, convertProductionLine, buyFactory, leaseFactory, sellFactory } = useEnterpriseStore();
+  const { production, finance, productionLineLimits, operation } = state;
   const [addingLine, setAddingLine] = useState<string | null>(null); // 记录当前正在添加生产线的厂房ID
   const [selectedProduct, setSelectedProduct] = useState<'P1' | 'P2'>('P1');
   const [selectedLineType, setSelectedLineType] = useState<'automatic' | 'semi-automatic' | 'manual' | 'flexible'>('automatic');
@@ -101,10 +102,14 @@ const ProductionCenter: React.FC = () => {
       {/* 生产数据概览 */}
       <div className="dashboard-card">
         <h2 className="dashboard-title">生产数据概览</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-blue-50 p-4 rounded-lg">
             <div className="text-sm text-blue-600 mb-1">厂房数量</div>
             <div className="text-2xl font-bold text-blue-800">{production.factories.length}</div>
+          </div>
+          <div className="bg-purple-50 p-4 rounded-lg">
+            <div className="text-sm text-purple-600 mb-1">土地和建筑</div>
+            <div className="text-2xl font-bold text-purple-800">{landAndBuildings(production.factories)}M</div>
           </div>
           <div className="bg-green-50 p-4 rounded-lg">
             <div className="text-sm text-green-600 mb-1">生产线数量</div>
@@ -128,10 +133,42 @@ const ProductionCenter: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {production.factories.map((factory: Factory) => (
             <div key={factory.id} className="border border-gray-200 rounded-lg p-4 bg-white shadow-sm">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold">{factory.name}</h3>
-                <div className="text-sm text-gray-500">
-                  容量: {factory.productionLines.length}/{factory.capacity} 条生产线
+              <div className="mb-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-lg font-semibold">{factory.name}</h3>
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                    factory.holding === 'owned' ? 'bg-blue-100 text-blue-700'
+                    : factory.holding === 'leased' ? 'bg-amber-100 text-amber-700'
+                    : 'bg-gray-200 text-gray-600'
+                  }`}>
+                    {factory.holding === 'owned' ? '自有' : factory.holding === 'leased' ? `租赁中（${RENT_BY_TYPE[factory.type]}M/年）` : '未持有'}
+                  </span>
+                </div>
+                <div className="text-sm text-gray-500 mt-1">
+                  容量: {factory.productionLines.length}/{factory.capacity} 条生产线 · 买价 {factory.purchasePrice}M
+                </div>
+                <div className="flex gap-2 mt-3">
+                  {factory.holding !== 'owned' && (
+                    <button onClick={() => buyFactory(factory.id)} disabled={operation.currentQuarter !== 4}
+                      className="text-xs px-3 py-1 rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+                      title={operation.currentQuarter !== 4 ? '厂房购买仅在年末（第4季度）办理' : `以 ${factory.purchasePrice}M 买断`}>
+                      购买 {factory.purchasePrice}M
+                    </button>
+                  )}
+                  {factory.holding === 'none' && (
+                    <button onClick={() => leaseFactory(factory.id)} disabled={operation.currentQuarter !== 4}
+                      className="text-xs px-3 py-1 rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50"
+                      title={operation.currentQuarter !== 4 ? '厂房租赁仅在年末（第4季度）办理' : `次年起按 ${RENT_BY_TYPE[factory.type]}M/年计租`}>
+                      租赁
+                    </button>
+                  )}
+                  {factory.holding === 'owned' && (
+                    <button onClick={() => sellFactory(factory.id)} disabled={factory.productionLines.length > 0}
+                      className="text-xs px-3 py-1 rounded bg-gray-600 text-white hover:bg-gray-700 disabled:opacity-50"
+                      title={factory.productionLines.length > 0 ? '需先腾空该厂房内的生产线' : `售价 ${factory.purchasePrice}M，计入4Q应收款`}>
+                      出售 +{factory.purchasePrice}M（4Q到账）
+                    </button>
+                  )}
                 </div>
               </div>
               
@@ -305,8 +342,8 @@ const ProductionCenter: React.FC = () => {
                   </div>
                 ))}
                 
-                {/* 空闲生产线位置 */}
-                {Array.from({ length: factory.capacity - factory.productionLines.length }).map((_, index) => (
+                {/* 空闲生产线位置：未持有的厂房不保留可用生产位 */}
+                {factory.holding !== 'none' && Array.from({ length: factory.capacity - factory.productionLines.length }).map((_, index) => (
                   <div key={`empty-${index}`} className="border-2 border-dashed border-gray-300 rounded-lg p-3 bg-white">
                     {addingLine === factory.id ? (
                       // 添加生产线表单
