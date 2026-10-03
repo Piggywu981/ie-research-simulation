@@ -327,7 +327,64 @@ describe('控制表导出', () => {
     store().buyFactory('factory-2');
     const { logs, saves } = { logs: store().state.operation.financialLogs, saves: store().getSaveFiles() };
     const table = buildYearControlTable(1, logs, saves);
-    expect(table.find(r => r[1] === '出售厂房')![2]).toContain('+40M（计入4Q应收款）');
+    // 逐字锁定导出 CSV 里真正落格的文本：q-12 售价不进现金（cashChange 0），
+    // 靠季度默认分支的统一规则（有事件即填描述串）取到整串，而非 ✓ 也不是截断片段。
+    expect(table.find(r => r[1] === '出售厂房')![2]).toBe('出售厂房：企业1大厂房 +40M（计入4Q应收款）');
     expect(table.find(r => r[1] === '支付租金/购买厂房')![2]).toContain('购买厂房');
+  });
+
+  // 年末行（phase !== '季度'）不受现金过滤影响，结算为 0 的租金必须显式入格——
+  // 否则"本年零租金"与"数据丢了"在导出的 CSV 上无法区分。
+  it('年末零租金：e-3 单元格显式显示「支付厂房租金：-厂房租金0M」', () => {
+    // 第1年Q4 买断小厂房 → 跨年刷新把 leasedThisYear 转 false → 第2年租金结算为 0M
+    useEnterpriseStore.setState({ state: { ...store().state, finance: { ...store().state.finance, cash: 60 } } });
+    advance(3);
+    store().buyFactory('factory-2');
+    expect(store().validationError).toBeNull();
+    store().nextQuarter(); // 第1年Q4 → 第2年Q1：结算第1年租金 3M
+    advance(3); // 第2年Q4
+    store().nextQuarter(); // 第2年Q4 → 第3年Q1：结算第2年租金 0M
+    const table = buildYearControlTable(2, store().state.operation.financialLogs, store().getSaveFiles());
+    expect(table.find(r => r[1] === '支付租金/购买厂房')![2]).toBe('支付厂房租金：-厂房租金0M');
+  });
+
+  it('年末零租金与玩家同年同季的「购买厂房」日志同格并存', () => {
+    // 第1年Q4 买断小厂房并卖掉大厂房 → 第2年Q4 再买回大厂房 → 第2年租金结算为 0M：
+    // 同一个 e-3 单元格里既有玩家的购买厂房（有现金变动）也有系统的零租金（cashChange 0），
+    // 两条都得留（年末行走 joinLogs，不按 cashChange 过滤）。
+    useEnterpriseStore.setState({
+      state: {
+        ...store().state,
+        finance: { ...store().state.finance, cash: 200 },
+        production: {
+          ...store().state.production,
+          factories: store().state.production.factories.map(f => f.id === 'factory-1' ? { ...f, productionLines: [] } : f),
+        },
+      },
+    });
+    advance(3); // 第1年Q4
+    store().buyFactory('factory-2');
+    store().sellFactory('factory-1');
+    expect(store().validationError).toBeNull();
+    store().nextQuarter(); // 第1年Q4 → 第2年Q1
+    advance(3); // 第2年Q4
+    store().buyFactory('factory-1');
+    expect(store().validationError).toBeNull();
+    store().nextQuarter(); // 第2年Q4 → 第3年Q1：结算第2年租金
+    const e3Logs = store().state.operation.financialLogs.filter(l => l.stepId === 'e-3' && l.year === 2);
+    // 零租金日志（cashChange 为 -0）确实在日志层：这正是被取消的 cashChange≠0 过滤会抹掉的那类事件
+    expect(e3Logs).toHaveLength(2);
+    expect(e3Logs.map(l => l.description)).toEqual(
+      expect.arrayContaining(['购买厂房：企业1大厂房 -40M', '支付厂房租金：-厂房租金0M']),
+    );
+    const table = buildYearControlTable(2, store().state.operation.financialLogs, store().getSaveFiles());
+    // 同一毫秒内落的两条日志 timestamp 相同，joinLogs 的稳定排序退回日志数组顺序（新日志在前），
+    // 先后次序不具约束力：按集合锁定「两条都在、且只有这两条」；顺序本身由
+    // tests/controlTable.test.ts 的年末行用例用显式 timestamp 钉死。
+    const cell = table.find(r => r[1] === '支付租金/购买厂房')![2];
+    expect(cell.split('；').sort()).toEqual([
+      '购买厂房：企业1大厂房 -40M',
+      '支付厂房租金：-厂房租金0M',
+    ].sort());
   });
 });

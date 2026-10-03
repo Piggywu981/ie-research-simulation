@@ -58,11 +58,10 @@ const quarterStartSnapshot = (saves: SaveFile[], year: number, quarter: number):
 
 /**
  * 生成第 year 年运行控制表数据行：[序号, 操作名称, 季度1, 季度2, 年度3, 季度4]
- * - 季度行：该年该季该步骤有事件则填日志描述串（有现金变动的），否则若有事件填 ✓
+ * - 季度行：该年该季该步骤有事件则填日志描述串（现金与非现金事件同一条规则），无事件填 —
  * - q-1 盘点：优先用存档快照 (现金,原料,成品)；无快照时用盘点日志
  * - q-20 结余：该季结束后现金（下一季度快照现金或本季日志 newCash）
  * - q-18/q-19：本季日志现金收/支合计
- * - q-12 出售厂房：售价进应收款不进现金，按描述串填格（默认分支会退化成 ✓）
  * - 年初/年末行：数据填在季度1列
  */
 export function buildYearControlTable(
@@ -111,12 +110,6 @@ export function buildYearControlTable(
           }
           break;
         }
-        case 'q-12': {
-          // 出售厂房售价进 4Q 应收款、不进现金（cashChange 为 0），默认分支会退化成 ✓，
-          // 而售价明细正是这一行的内容：直接填日志描述串。
-          row[2 + q - 1] = joinLogs(cellLogs);
-          break;
-        }
         case 'q-18': {
           // 本季全部现金收入合计（跨步骤汇总）
           const income = yearLogs
@@ -145,8 +138,9 @@ export function buildYearControlTable(
           break;
         }
         default: {
-          const cashLogs = cellLogs.filter((l) => l.cashChange !== 0);
-          row[2 + q - 1] = cashLogs.length > 0 ? joinLogs(cashLogs) : cellLogs.length > 0 ? '✓' : '';
+          // 统一规则（规格 §4.12）：该季有事件就填事件描述串，是否动现金不影响取数；
+          // 无事件时描述串为空，交给下面的 — 兜底。
+          row[2 + q - 1] = joinLogs(cellLogs);
         }
       }
       // 无事件也不留空白格（未启用/未触发步骤统一填 —）

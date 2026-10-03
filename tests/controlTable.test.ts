@@ -65,14 +65,30 @@ describe('单元格填充', () => {
     expect(q1Row[3]).toBe('(15M，1R1，2P1)');
   });
 
-  it('现金变动步骤填日志描述，非现金步骤填 ✓', () => {
+  it('季度单元格统一填事件描述串：现金与非现金事件同一条规则（规格 §4.12）', () => {
     const logs = [
       mkLog({ year: 1, quarter: 1, stepId: 'q-17', description: '-2M(广告费)', cashChange: -2 }),
       mkLog({ year: 1, quarter: 1, stepId: 'q-7', description: '完工入库', cashChange: 0 }),
+      mkLog({ year: 1, quarter: 2, stepId: 'q-14', description: '按订单交货：3*P1(订单总额15M，账期2Q)', cashChange: 0 }),
+      mkLog({ year: 1, quarter: 3, stepId: 'q-12', description: '出售厂房：企业1大厂房 +40M（计入4Q应收款）', cashChange: 0 }),
     ];
     const table = rows(1, logs, []);
     expect(table.find(r => r[1].includes('其他现金收支'))![2]).toBe('-2M(广告费)');
-    expect(table.find(r => r[1].includes('完工入库'))![2]).toBe('✓');
+    // 非现金事件（完工入库/交货/出售厂房）与现金事件走同一取数：填描述串，不再是 ✓
+    expect(table.find(r => r[1].includes('完工入库'))![2]).toBe('完工入库');
+    expect(table.find(r => r[1] === '按订单交货')![3]).toBe('按订单交货：3*P1(订单总额15M，账期2Q)');
+    expect(table.find(r => r[1] === '出售厂房')![4]).toBe('出售厂房：企业1大厂房 +40M（计入4Q应收款）');
+  });
+
+  it('年末行同格并存：玩家购买厂房与结算为 0 的租金都入格', () => {
+    const logs = [
+      mkLog({ quarter: 4, stepId: 'e-3', description: '购买厂房：企业1大厂房 -40M', cashChange: -40, timestamp: 100 }),
+      mkLog({ quarter: 4, stepId: 'e-3', description: '支付厂房租金：-厂房租金0M', cashChange: 0, timestamp: 200 }),
+    ];
+    const table = rows(1, logs, []);
+    // joinLogs 按 timestamp 升序；年末行不过滤 cashChange，零租金行不会被并成 ✓ 或丢掉
+    expect(table.find(r => r[1] === '支付租金/购买厂房')![2])
+      .toBe('购买厂房：企业1大厂房 -40M；支付厂房租金：-厂房租金0M');
   });
 
   it('q-18/q-19 汇总本季现金收支', () => {
