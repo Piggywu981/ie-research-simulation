@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger } from '../types/enterprise';
-import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE } from '../utils/rules';
+import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE, RENT_BY_TYPE } from '../utils/rules';
 import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS, generateYearOrders } from '../config/marketDemand';
 
 // 全局状态，用于跟踪重置次数
@@ -302,6 +302,8 @@ export const useEnterpriseStore = create<{
   // 生产操作
   investProductR_D: (product: 'P2', amount?: number) => void;
   addProductionLine: (factoryId: string, lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible', product: 'P1' | 'P2') => void;
+  buyFactory: (factoryId: string) => void;
+  leaseFactory: (factoryId: string) => void;
   removeProductionLine: (factoryId: string, lineId: string) => void;
   cancelProduction: (lineId: string) => void;
   startProduction: (lineId: string) => void;
@@ -944,6 +946,97 @@ export const useEnterpriseStore = create<{
 
       return {
         state: updatedState,
+      };
+    }),
+
+  // 年末（第4季度）买断厂房：权属 leased/none → owned，按原值支付现金，不影响在产线
+  buyFactory: (factoryId) =>
+    set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
+      const { finance, production, operation } = state.state;
+      if (operation.currentQuarter !== 4) {
+        return { validationError: '厂房购买与租赁仅在年末（第4季度）办理' };
+      }
+      const factory = production.factories.find(f => f.id === factoryId);
+      if (!factory) {
+        return { validationError: '未找到该厂房' };
+      }
+      if (factory.holding === 'owned') {
+        return { validationError: `${factory.name}已是自有厂房，无需重复购买` };
+      }
+      if (finance.cash < factory.purchasePrice) {
+        return { validationError: `现金不足：购买${factory.name}需 ${factory.purchasePrice}M，当前现金 ${finance.cash}M` };
+      }
+      const newCash = finance.cash - factory.purchasePrice;
+      const log: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-buy-factory`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `购买厂房：${factory.name} -${factory.purchasePrice}M`,
+        cashChange: -factory.purchasePrice,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'e-3',
+      };
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          production: {
+            ...production,
+            factories: production.factories.map(f =>
+              f.id === factoryId ? { ...f, holding: 'owned' as const } : f
+            ),
+          },
+          finance: { ...finance, cash: newCash },
+          operation: { ...operation, financialLogs: [log, ...operation.financialLogs] },
+        },
+      };
+    }),
+
+  // 年末（第4季度）新租未持有的厂房槽位：当年不计租，次年租金由年度快照决定
+  leaseFactory: (factoryId) =>
+    set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
+      const { production, operation } = state.state;
+      if (operation.currentQuarter !== 4) {
+        return { validationError: '厂房购买与租赁仅在年末（第4季度）办理' };
+      }
+      const factory = production.factories.find(f => f.id === factoryId);
+      if (!factory) {
+        return { validationError: '未找到该厂房' };
+      }
+      if (factory.holding !== 'none') {
+        return { validationError: `${factory.name}已被持有（${factory.holding === 'owned' ? '自有' : '租赁中'}），无需再租` };
+      }
+      const log: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-lease-factory`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `新租厂房：${factory.name}（租金${RENT_BY_TYPE[factory.type]}M/年，次年起计）`,
+        cashChange: 0,
+        newCash: state.state.finance.cash,
+        operator: '企业1管理者',
+        stepId: 'e-3',
+      };
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          production: {
+            ...production,
+            factories: production.factories.map(f =>
+              f.id === factoryId ? { ...f, holding: 'leased' as const } : f
+            ),
+          },
+          operation: { ...operation, financialLogs: [log, ...operation.financialLogs] },
+        },
       };
     }),
 
