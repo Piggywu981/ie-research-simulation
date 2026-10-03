@@ -84,13 +84,16 @@ describe('购买与租赁厂房', () => {
     expect(store().validationError).toContain('无需重复购买');
   });
 
-  it('未持有的槽位可新租，当年与次年租金由快照决定', () => {
+  it('未持有的槽位可新租：只改权属，不覆写 leasedThisYear 租赁快照', () => {
     advance(3);
-    useEnterpriseStore.setState({ state: { ...store().state, production: { ...store().state.production, factories: store().state.production.factories.map(f => f.id === 'factory-1' ? { ...f, holding: 'none' as const } : f) } } });
+    // leasedThisYear 置为 true，模拟可达状态：租赁→快照为 true→买断→出售后快照仍为 true→次年 Q4 再新租。
+    // 规格 §4.2/§9-7：leaseFactory 不得改动租赁快照，否则该槽位次年租金被静默抹掉（资金泄漏）。
+    useEnterpriseStore.setState({ state: { ...store().state, production: { ...store().state.production, factories: store().state.production.factories.map(f => f.id === 'factory-1' ? { ...f, holding: 'none' as const, leasedThisYear: true } : f) } } });
     store().leaseFactory('factory-1');
     expect(store().validationError).toBeNull();
     expect(store().state.production.factories[0].holding).toBe('leased');
-    expect(store().state.production.factories[0].leasedThisYear).toBe(false);
+    // 若实现把 leasedThisYear 覆写为 false（抹掉次年租金），本断言必须失败
+    expect(store().state.production.factories[0].leasedThisYear).toBe(true);
     const log = store().state.operation.financialLogs.find(l => l.stepId === 'e-3' && l.description.includes('新租厂房'));
     expect(log?.description).toContain('5M/年');
   });
