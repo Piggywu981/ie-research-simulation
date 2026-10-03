@@ -96,6 +96,9 @@ export interface ProductionLine {
   conversionProgress: number; // 转产进度（0到conversionPeriod）
 }
 
+// 厂房持有方式
+export type FactoryHolding = 'owned' | 'leased' | 'none';
+
 // 厂房类型
 export interface Factory {
   id: string;
@@ -104,6 +107,10 @@ export interface Factory {
   purchasePrice: number;
   capacity: number; // 可容纳生产线数量
   productionLines: ProductionLine[];
+  // 持有方式：自有 / 租赁 / 未持有（槽位保留但不可放置生产线）
+  holding: FactoryHolding;
+  // 本年度（年初时点）是否租赁中；租金结算只认此快照，不认实时 holding
+  leasedThisYear: boolean;
 }
 
 // 生产数据类型
@@ -288,7 +295,7 @@ export interface SaveFile {
   enterpriseName: string;
   timestamp: number;
   resetCount: number;
-  version: number; // 存档格式版本：1=旧版（需迁移），2=贷款台账/年度台账/绝对季度索引
+  version: number; // 存档格式版本：1=旧版，2=贷款台账/年度台账/绝对季度索引，3=厂房权属与租赁快照
   state: EnterpriseState;
   createdAt: string;
 }

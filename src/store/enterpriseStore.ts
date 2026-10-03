@@ -59,7 +59,9 @@ const initialState: EnterpriseState = {
         id: 'factory-1',
         name: '企业1大厂房',
         type: 'large',
-        purchasePrice: 40, // 大厂房价值40M（自有，不提折旧）
+        purchasePrice: 40, // 大厂房价值40M
+        holding: 'owned',
+        leasedThisYear: false,
         capacity: 6, // 大厂房6个生产位
         productionLines: [
           {
@@ -88,7 +90,9 @@ const initialState: EnterpriseState = {
         id: 'factory-2',
         name: '企业1小厂房',
         type: 'small',
-        purchasePrice: 30, // 小厂房价值30M（初始为租赁，年末付租金3M/年）
+        purchasePrice: 30, // 小厂房价值30M
+        holding: 'leased',
+        leasedThisYear: true,
         capacity: 4, // 小厂房4个生产位
         productionLines: [
           {
@@ -206,9 +210,9 @@ const initialState: EnterpriseState = {
   },
 };
 
-// 旧版（v1）存档迁移：补齐贷款台账、年度台账、年度化市场/ISO、生产线净值等新字段。
+// 旧版（v1/v2）存档迁移：补齐贷款台账、年度台账、年度化市场/ISO、生产线净值、厂房权属与租赁快照等新字段。
 // v1 的原料到货季度为 1~4 循环值（跨年即错），在途订单直接作废并提示。
-const migrateStateV1 = (s: EnterpriseState): EnterpriseState => {
+const migrateState = (s: EnterpriseState): EnterpriseState => {
   const state: EnterpriseState = JSON.parse(JSON.stringify(s));
   state.isPaused = false;
 
@@ -244,6 +248,12 @@ const migrateStateV1 = (s: EnterpriseState): EnterpriseState => {
       if (typeof line.netValue !== 'number') line.netValue = line.purchasePrice;
       if (typeof line.builtInYear !== 'number') line.builtInYear = 0;
     });
+  });
+
+  // 厂房权属（v3）：旧档按槽位补齐——大厂房自有、小厂房租赁，租赁快照与权属一致
+  state.production?.factories?.forEach(f => {
+    if (!f.holding) f.holding = f.id === 'factory-2' ? 'leased' : 'owned';
+    if (typeof f.leasedThisYear !== 'boolean') f.leasedThisYear = f.holding === 'leased';
   });
 
   // 研发 P2 分期字段
@@ -359,7 +369,7 @@ export const useEnterpriseStore = create<{
       enterpriseName: '企业1',
       timestamp,
       resetCount,
-      version: 2,
+      version: 3,
       state: JSON.parse(JSON.stringify(state)),
       createdAt: formattedDate,
     };
@@ -389,7 +399,7 @@ export const useEnterpriseStore = create<{
       enterpriseName: '企业1',
       timestamp,
       resetCount,
-      version: 2,
+      version: 3,
       state: JSON.parse(JSON.stringify(state)),
       createdAt: formattedDate,
     };
@@ -409,15 +419,15 @@ export const useEnterpriseStore = create<{
   // 加载游戏
   loadGame: (saveFile: SaveFile) => {
     const raw = JSON.parse(JSON.stringify(saveFile.state)) as EnterpriseState;
-    const migrated = migrateStateV1(raw);
+    const migrated = migrateState(raw);
     set({
       state: migrated,
       resetCount: saveFile.resetCount
     });
     // 添加操作日志
-    get().addOperationLog('加载存档', saveFile.version === 2
+    get().addOperationLog('加载存档', saveFile.version === 3
       ? `加载存档：${saveFile.name}`
-      : `加载存档：${saveFile.name}（旧版存档已迁移至v2，建议重置开新局）`);
+      : `加载存档：${saveFile.name}（旧版存档已迁移至v3，建议重置开新局）`);
   },
 
   // 重置游戏

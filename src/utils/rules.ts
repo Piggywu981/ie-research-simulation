@@ -128,3 +128,15 @@ export const incomeStatement = (l: Ledger) => {
   const tax = Math.floor(Math.max(0, pretax) * TAX_RATE);
   return { grossProfit, beforeDepreciation, beforeInterest, pretax, tax, net: pretax - tax };
 };
+
+// 厂房交易（非现金资产置换）：规格 §4.1/§4.3
+export const RENT_BY_TYPE = { large: 5, small: 3 } as const;
+
+export const landAndBuildings = (
+  factories: { holding: string; purchasePrice: number }[],
+) => factories.filter((f) => f.holding === 'owned').reduce((sum, f) => sum + f.purchasePrice, 0);
+
+// 年末租金只向「年初即在租赁中」的槽位收取，避免年末买断漏收、年末新租多收
+export const annualRent = (
+  factories: { type: 'large' | 'small'; leasedThisYear: boolean }[],
+) => factories.filter((f) => f.leasedThisYear).reduce((sum, f) => sum + RENT_BY_TYPE[f.type], 0);
