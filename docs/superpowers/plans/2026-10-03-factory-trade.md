@@ -576,8 +576,9 @@ git commit -m "feat(production): 出售厂房入应收账款，未持有槽位�
 
 ```ts
 describe('租金快照口径', () => {
+  // 必须用 startsWith 精确锁定系统自动租金日志：玩家的新租日志同样含"租金"二字
   const rentLogs = () => store().state.operation.financialLogs
-    .filter(l => l.stepId === 'e-3' && l.description.includes('租金'));
+    .filter(l => l.stepId === 'e-3' && l.description.startsWith('支付厂房租金'));
 
   it('年末买断小厂房，收尾年度仍收当年 3M 租金', () => {
     useEnterpriseStore.setState({ state: { ...store().state, finance: { ...store().state.finance, cash: 60 } } });
