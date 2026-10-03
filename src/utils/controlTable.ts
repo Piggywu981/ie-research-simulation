@@ -1,4 +1,4 @@
-// 运行控制表：按年推导 + CSV 导出（纯函数，依据《你需要写一个用友沙盘ERP的模拟》行格式）
+// 运行控制表：按年推导 + CSV 导出（纯函数，行格式依据 directions/ 下课程原始需求文件）
 import type { FinancialLogRecord, SaveFile } from '../types/enterprise';
 
 export interface ControlStep {

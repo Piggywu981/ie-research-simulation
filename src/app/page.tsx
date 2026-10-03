@@ -29,7 +29,7 @@ export default function Home() {
       <header className="bg-white shadow-md">
         <div className="container mx-auto px-4 py-3 flex justify-between items-center">
           <div className="flex items-center">
-            <h1 className="text-xl font-bold text-gray-800">用友ERP沙盘模拟（企业1专属版）</h1>
+            <h1 className="text-xl font-bold text-gray-800">创新实践及科研训练·企业运营模拟（企业1专属版）</h1>
           </div>
           <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-2 bg-blue-50 px-3 py-1 rounded-full">

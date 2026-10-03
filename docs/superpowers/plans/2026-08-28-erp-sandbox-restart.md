@@ -468,7 +468,7 @@ export function toCSV(rows: string[][], year: number): string { /* 表头两行 
 
 **文件：** 创建 `src/components/RulesModal.tsx`、`src/components/DiscountPanel.tsx`；修改 `src/app/page.tsx`、`MarketingCenter.tsx`、`package.json`、`README.md`。
 
-- [ ] 步骤 1：`RulesModal.tsx`：props `{ open, onClose }`，纯 React modal（fixed 遮罩 + 白底卡片 + 滚动），分节渲染规则（广告修改项置顶高亮）。内容源：`.agents/documents/用友ERP沙盘模拟规则说明文件.md` 按规格校正后内联为 JSX 常量数组。
+- [ ] 步骤 1：`RulesModal.tsx`：props `{ open, onClose }`，纯 React modal（fixed 遮罩 + 白底卡片 + 滚动），分节渲染规则（广告修改项置顶高亮）。内容源：`.agents/documents/企业运营模拟规则说明文件.md` 按规格校正后内联为 JSX 常量数组。
 - [ ] 步骤 2：暂停：store action `togglePaused()`；`page.tsx` 页头加"暂停/继续"按钮 + `isPaused &&` 红色横幅"运营已暂停（教学讲解模式）"；各变更 action 首行 `if (get().state.isPaused) return;`（至少：贷款、贴现、广告、订单、生产、采购、投资、nextQuarter、payTaxes）。
 - [ ] 步骤 3：`DiscountPanel.tsx`：输入金额（步进 7）+ 可贴现余额展示 + 确认按钮；挂载在 `page.tsx` 财务中心 tab。
 - [ ] 步骤 4：时机门控提示：`MarketingCenter` 市场/ISO 投资按钮非 Q4 禁用并注明"年末操作"；`applyLongTermLoan` 按钮 Q4 才可点；`page.tsx` 财务中心加"支付应付税"按钮（Q1、taxesPayable>0 时可用，显示金额）——替换页头硬编码徽标为真实 `taxesPayable`。

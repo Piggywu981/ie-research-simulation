@@ -1,5 +1,5 @@
 // 市场订单池：课程材料未提供官方需求预测表（详见设计规格第9节），
-// 以下数值为参照经典用友 P1/P2 需求曲线拟定的初始值，教师可按课程实际数据修改。
+// 以下数值为参照经典沙盘教学的 P1/P2 需求曲线拟定的初始值，教师可按课程实际数据修改。
 import type { ProductId } from '../utils/rules';
 
 export type MarketId = 'local' | 'regional' | 'domestic' | 'asian' | 'international';

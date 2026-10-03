@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: '用友ERP沙盘模拟（企业1专属版）',
-  description: '基于《创新实践及科研训练》课程用友ERP沙盘体系，构建企业1专属仿真环境',
+  title: '创新实践及科研训练·企业运营模拟（企业1专属版）',
+  description: '《创新实践及科研训练》课程配套的企业运营仿真环境，模拟企业1连续四年运营决策',
 }
 
 export default function RootLayout({
