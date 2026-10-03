@@ -1086,8 +1086,8 @@ export const useEnterpriseStore = create<{
           production: {
             ...production,
             factories: production.factories.map(f =>
-              // leasedThisYear 一并清零：出售后该槽位当年不再计租
-              f.id === factoryId ? { ...f, holding: 'none' as const, leasedThisYear: false } : f
+              // 只改权属：leasedThisYear 由跨年刷新独占写入，交易 action 一律不覆写（规格 §4.3）
+              f.id === factoryId ? { ...f, holding: 'none' as const } : f
             ),
           },
           finance: { ...finance, accountsReceivable: newAR },
