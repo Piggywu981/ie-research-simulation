@@ -528,7 +528,7 @@ Expected: FAIL，`store().sellFactory is not a function`。
           production: {
             ...production,
             factories: production.factories.map(f =>
-              f.id === factoryId ? { ...f, holding: 'none' as const, leasedThisYear: false } : f
+              f.id === factoryId ? { ...f, holding: 'none' as const } : f
             ),
           },
           finance: { ...finance, accountsReceivable: newAR },
@@ -607,14 +607,33 @@ describe('租金快照口径', () => {
     expect(year2?.description).toBe('支付厂房租金：-厂房租金8M'); // 大 5M + 小 3M
   });
 
-  it('卖掉自有厂房后次年不再收其租金', () => {
+  it('买断的厂房卖掉后，次年不再收其租金（快照由跨年刷新清零，不由 sellFactory 清零）', () => {
+    // 真实路径：第1年Q4买断小厂房 → 结算收当年3M → 跨年刷新把快照转 false
+    // → 第2年Q4出售 → 第2年结算租金为 0。
+    // 不变量：只有跨年刷新写 leasedThisYear；sellFactory 不得清零，否则"年末买断后同年卖出"
+    // 会把当年租金一起免掉（§9-7 要防的漏收）。
+    // 小厂房需先清空生产线，否则 sellFactory 会以"需先腾空"拒绝。
     useEnterpriseStore.setState({
-      state: { ...store().state, production: { ...store().state.production, factories: store().state.production.factories.map(f => f.id === 'factory-2' ? { ...f, holding: 'owned' as const } : f) } },
+      state: {
+        ...store().state,
+        finance: { ...store().state.finance, cash: 60 },
+        production: {
+          ...store().state.production,
+          factories: store().state.production.factories.map(f =>
+            f.id === 'factory-2' ? { ...f, productionLines: [] } : f
+          ),
+        },
+      },
     });
-    store().sellFactory('factory-2');
     advance(3);
-    store().nextQuarter();
-    expect(rentLogs().find(l => l.year === 2)?.description).toBe('支付厂房租金：-厂房租金0M');
+    store().buyFactory('factory-2');
+    store().nextQuarter(); // 第1年Q4 → 第2年Q1：结算第1年租金
+    expect(rentLogs().find(l => l.year === 2)?.description).toBe('支付厂房租金：-厂房租金3M');
+    advance(3); // 第2年Q4
+    expect(store().state.production.factories[1].leasedThisYear).toBe(false);
+    store().sellFactory('factory-2');
+    store().nextQuarter(); // 第2年Q4 → 第3年Q1：该槽位已出售，租金归零
+    expect(rentLogs().find(l => l.year === 3)?.description).toBe('支付厂房租金：-厂房租金0M');
   });
 });
 ```
