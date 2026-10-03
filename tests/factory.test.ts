@@ -113,3 +113,70 @@ describe('购买与租赁厂房', () => {
     expect(store().validationError).toContain('暂停');
   });
 });
+
+describe('出售厂房', () => {
+  const emptyLargeFactory = () => {
+    useEnterpriseStore.setState({
+      state: {
+        ...store().state,
+        production: {
+          ...store().state.production,
+          factories: store().state.production.factories.map(f =>
+            f.id === 'factory-1' ? { ...f, productionLines: [] } : f
+          ),
+        },
+      },
+    });
+  };
+
+  it('厂房内有生产线时拒绝出售', () => {
+    store().sellFactory('factory-1');
+    expect(store().validationError).toContain('腾空');
+    expect(store().state.production.factories[0].holding).toBe('owned');
+  });
+
+  it('季中可出售：不进现金、售价入应收4Q档、写 q-12 非现金日志', () => {
+    emptyLargeFactory();
+    const cashBefore = store().state.finance.cash;
+    store().sellFactory('factory-1');
+    expect(store().validationError).toBeNull();
+    expect(store().state.finance.cash).toBe(cashBefore);
+    expect(store().state.production.factories[0].holding).toBe('none');
+    expect(store().state.finance.accountsReceivable[3]).toBe(15 + 40);
+    const log = store().state.operation.financialLogs.find(l => l.stepId === 'q-12');
+    expect(log?.cashChange).toBe(0);
+    expect(log?.description).toContain('+40M（计入4Q应收款）');
+    // 派生资产联动：转为 none 的槽位不再计入土地和建筑（40M → 0）
+    expect(landAndBuildings(store().state.production.factories)).toBe(0);
+  });
+
+  it('租赁中的厂房不可出售，提示先买断', () => {
+    store().sellFactory('factory-2');
+    expect(store().validationError).toContain('买断');
+  });
+
+  it('出售后第4个季度初收到该笔应收', () => {
+    emptyLargeFactory();
+    store().sellFactory('factory-1');
+    const before = store().state.finance.cash;
+    for (let i = 0; i < 4; i++) store().nextQuarter();
+    expect(store().validationError).toBeNull();
+    expect(store().state.finance.cash).toBeGreaterThan(before + 39);
+  });
+
+  it('出售所得可被 7:1 贴现（与既有应收混池，从最早账期起扣）', () => {
+    emptyLargeFactory();
+    store().sellFactory('factory-1');
+    store().discountReceivable(14);
+    expect(store().validationError).toBeNull();
+    expect(store().state.finance.cash).toBe(20 + 12);
+    expect(store().state.finance.accountsReceivable[3]).toBe(55 - 14);
+  });
+
+  it('未持有的槽位不能放置生产线', () => {
+    emptyLargeFactory();
+    store().sellFactory('factory-1');
+    store().addProductionLine('factory-1', 'automatic', 'P1');
+    expect(store().validationError).toContain('未被持有');
+  });
+});

@@ -304,6 +304,7 @@ export const useEnterpriseStore = create<{
   addProductionLine: (factoryId: string, lineType: 'automatic' | 'semi-automatic' | 'manual' | 'flexible', product: 'P1' | 'P2') => void;
   buyFactory: (factoryId: string) => void;
   leaseFactory: (factoryId: string) => void;
+  sellFactory: (factoryId: string) => void;
   removeProductionLine: (factoryId: string, lineId: string) => void;
   cancelProduction: (lineId: string) => void;
   startProduction: (lineId: string) => void;
@@ -805,6 +806,10 @@ export const useEnterpriseStore = create<{
       }
 
       const factory = state.state.production.factories[factoryIndex];
+      // 未持有的槽位（出售后保留空位）不可排产
+      if (factory.holding === 'none') {
+        return { validationError: `${factory.name}未被持有，无法放置生产线` };
+      }
       // 检查厂房是否还有容量
       if (factory.productionLines.length >= factory.capacity) {
         return state;
@@ -1035,6 +1040,57 @@ export const useEnterpriseStore = create<{
               f.id === factoryId ? { ...f, holding: 'leased' as const } : f
             ),
           },
+          operation: { ...operation, financialLogs: [log, ...operation.financialLogs] },
+        },
+      };
+    }),
+
+  // 出售厂房（任意季度）：腾空后权属转 none，售价计入 4Q 应收账款档，本季度不进现金
+  sellFactory: (factoryId) =>
+    set((state) => {
+      if (state.state.isPaused) {
+        return { validationError: '运营已暂停（教学讲解模式），请先继续运营' };
+      }
+      const { finance, production, operation } = state.state;
+      const factory = production.factories.find(f => f.id === factoryId);
+      if (!factory) {
+        return { validationError: '未找到该厂房' };
+      }
+      if (factory.holding === 'leased') {
+        return { validationError: `${factory.name}为租赁厂房，请先买断后再出售` };
+      }
+      if (factory.holding === 'none') {
+        return { validationError: `${factory.name}未被持有，无法出售` };
+      }
+      if (factory.productionLines.length > 0) {
+        return { validationError: `${factory.name}仍有 ${factory.productionLines.length} 条生产线，需先腾空后才能出售` };
+      }
+      // 售价计入 4Q（索引 3）应收款档，随既有应收款一并滚动收现/贴现
+      const newAR = [...finance.accountsReceivable] as [number, number, number, number];
+      newAR[3] += factory.purchasePrice;
+      const log: FinancialLogRecord = {
+        id: `finlog-${Date.now()}-sell-factory`,
+        year: operation.currentYear,
+        quarter: operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `出售厂房：${factory.name} +${factory.purchasePrice}M（计入4Q应收款）`,
+        cashChange: 0,
+        newCash: finance.cash,
+        operator: '企业1管理者',
+        stepId: 'q-12',
+      };
+      return {
+        validationError: null,
+        state: {
+          ...state.state,
+          production: {
+            ...production,
+            factories: production.factories.map(f =>
+              // leasedThisYear 一并清零：出售后该槽位当年不再计租
+              f.id === factoryId ? { ...f, holding: 'none' as const, leasedThisYear: false } : f
+            ),
+          },
+          finance: { ...finance, accountsReceivable: newAR },
           operation: { ...operation, financialLogs: [log, ...operation.financialLogs] },
         },
       };
