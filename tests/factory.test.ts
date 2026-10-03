@@ -148,6 +148,31 @@ describe('出售厂房', () => {
     expect(log?.description).toContain('+40M（计入4Q应收款）');
     // 派生资产联动：转为 none 的槽位不再计入土地和建筑（40M → 0）
     expect(landAndBuildings(store().state.production.factories)).toBe(0);
+    // 本例只查权属与现金；"出售不得清零 leasedThisYear"由下一条用例单独守卫
+    // （此处 factory-1 的快照初值就是 false，该断言无法区分"没写"与"写成 false"）。
+  });
+
+  it('出售只改权属，不清零租赁快照（该槽位当年租金义务仍保留）', () => {
+    // 规格 §4.3：leasedThisYear 由 nextQuarter 的跨年刷新独占写入，交易 action 一律不覆写。
+    // 把大厂房快照置为 true 是可达状态（租赁→快照 true→买断→出售），
+    // 若 sellFactory 连带写 leasedThisYear: false，年末就少收这一槽位的 5M（§9-7 漏收）。
+    useEnterpriseStore.setState({
+      state: {
+        ...store().state,
+        production: {
+          ...store().state.production,
+          factories: store().state.production.factories.map(f =>
+            f.id === 'factory-1' ? { ...f, holding: 'owned' as const, productionLines: [], leasedThisYear: true } : f
+          ),
+        },
+      },
+    });
+    store().sellFactory('factory-1');
+    expect(store().validationError).toBeNull();
+    expect(store().state.production.factories[0].holding).toBe('none');
+    expect(store().state.production.factories[0].leasedThisYear).toBe(true);
+    // 快照未被抹掉 → 年末租金仍把它计入：大 5M + 小厂房（初始 leasedThisYear 即为 true）3M = 8M
+    expect(annualRent(store().state.production.factories)).toBe(8);
   });
 
   it('租赁中的厂房不可出售，提示先买断', () => {
@@ -188,12 +213,24 @@ describe('租金快照口径', () => {
   const rentLogs = () => store().state.operation.financialLogs
     .filter(l => l.stepId === 'e-3' && l.description.startsWith('支付厂房租金'));
 
-  it('年末买断小厂房，收尾年度仍收当年 3M 租金', () => {
+  it('年末买断小厂房，收尾年度仍收当年 3M 租金，次年起不再计租', () => {
     useEnterpriseStore.setState({ state: { ...store().state, finance: { ...store().state.finance, cash: 60 } } });
     advance(3);
     store().buyFactory('factory-2');
+    // 买断确实生效（权属转 owned）：否则下面的 3M 只是"从未买断"的平凡结果
+    expect(store().state.production.factories[1].holding).toBe('owned');
     store().nextQuarter(); // 第1年Q4 → 第2年Q1，此处结算第1年租金
-    expect(rentLogs().some(l => l.year === 1 && l.description.includes('3M'))).toBe(true);
+    // 精确锁定：第 1 年只有一条租金日志，金额恰为 3M（some()+includes('3M') 会放过 13M 与重复日志）
+    const year1 = rentLogs().filter(l => l.year === 1);
+    expect(year1).toHaveLength(1);
+    expect(year1[0].description).toBe('支付厂房租金：-厂房租金3M');
+    // 跨年刷新把快照转 false（权属已是 owned），故第 2 年不该再收这笔租金——旧的按 type 硬编码会多收 3M
+    advance(3); // 第2年Q4
+    expect(store().state.production.factories[1].leasedThisYear).toBe(false);
+    store().nextQuarter(); // 第2年Q4 → 第3年Q1：结算第2年租金
+    const year2 = rentLogs().filter(l => l.year === 2);
+    expect(year2).toHaveLength(1);
+    expect(year2[0].description).toBe('支付厂房租金：-厂房租金0M');
   });
 
   it('年末新租大厂房，收尾年度不计其租金，次年计 5M', () => {
@@ -215,11 +252,11 @@ describe('租金快照口径', () => {
     expect(year2?.description).toBe('支付厂房租金：-厂房租金8M'); // 大 5M + 小 3M
   });
 
-  it('买断的厂房卖掉后，次年不再收其租金（快照由跨年刷新清零，不由 sellFactory 清零）', () => {
-    // 真实路径：第1年Q4买断小厂房 → 结算收当年3M → 跨年刷新把快照转 false
-    // → 第2年Q4出售 → 第2年结算租金为 0。
-    // 不变量：只有跨年刷新写 leasedThisYear；sellFactory 不得清零，否则"年末买断后同年卖出"
-    // 会把当年租金一起免掉（§9-7 要防的漏收）。
+  it('买断的厂房隔年卖掉后，次年不再收其租金（快照由跨年刷新清零）', () => {
+    // 本例走的是跨年路径：第1年Q4买断 → 结算收当年3M → 跨年刷新把快照转 false
+    // → 第2年Q4出售 → 第2年结算租金为 0M，即"出售不再收租"由刷新负责。
+    // 注意：本例证不了 sellFactory 自己不清快照——出售时快照早已被刷新成 false，
+    // 0M 归因于刷新。同年Q4"买断后立刻卖出"的漏收由下一条用例守卫（§9-7）。
     // 小厂房需先清空生产线，否则 sellFactory 会以"需先腾空"拒绝。
     useEnterpriseStore.setState({
       state: {
@@ -242,5 +279,35 @@ describe('租金快照口径', () => {
     store().sellFactory('factory-2');
     store().nextQuarter(); // 第2年Q4 → 第3年Q1：该槽位已出售，租金归零
     expect(rentLogs().find(l => l.year === 2)?.description).toBe('支付厂房租金：-厂房租金0M');
+  });
+
+  it('同季买断后立即出售，年末仍按快照收当年 3M 租金（sellFactory 不清快照）', () => {
+    // §9-7 的漏收路径：第1年Q4 买断小厂房 → 同年Q4 就把已自有的槽位卖掉（生产线已腾空）
+    // → nextQuarter 结算。不变量：只有跨年刷新写 leasedThisYear；sellFactory 若顺手清零，
+    // "年末买断后同年卖出"就变成价值中立的翻转，把当年 3M 一起免掉。
+    // 断言分两层：快照本身仍为 true（直接绑住 sellFactory 的写入），结算金额仍为 3M（绑住资金后果）。
+    useEnterpriseStore.setState({
+      state: {
+        ...store().state,
+        finance: { ...store().state.finance, cash: 60 },
+        production: {
+          ...store().state.production,
+          factories: store().state.production.factories.map(f =>
+            f.id === 'factory-2' ? { ...f, productionLines: [] } : f
+          ),
+        },
+      },
+    });
+    advance(3); // 第1年Q4
+    store().buyFactory('factory-2');
+    expect(store().validationError).toBeNull();
+    expect(store().state.production.factories[1].holding).toBe('owned');
+    store().sellFactory('factory-2');
+    expect(store().validationError).toBeNull();
+    expect(store().state.production.factories[1].holding).toBe('none');
+    // 出售只改权属：年初租赁快照必须原样保留
+    expect(store().state.production.factories[1].leasedThisYear).toBe(true);
+    store().nextQuarter(); // 第1年Q4 → 第2年Q1：按快照结算第1年租金
+    expect(rentLogs().find(l => l.year === 1)?.description).toBe('支付厂房租金：-厂房租金3M');
   });
 });
