@@ -226,9 +226,10 @@ describe('购买与租赁厂房', () => {
     advance(3);
     expect(store().state.operation.currentQuarter).toBe(4);
     expect(store().state.production.factories[1].productionLines).toHaveLength(1);
+    const cashBefore = store().state.finance.cash; // 推进到 Q4 会产行政费等变动，必须用差值断言
     store().buyFactory('factory-2');
     expect(store().validationError).toBeNull();
-    expect(store().state.finance.cash).toBe(30);
+    expect(store().state.finance.cash).toBe(cashBefore - 30);
     expect(store().state.production.factories[1].holding).toBe('owned');
     // 规格 §9 假设 3：买断是权属变更，不要求腾空、不影响在产线
     expect(store().state.production.factories[1].productionLines).toHaveLength(1);
