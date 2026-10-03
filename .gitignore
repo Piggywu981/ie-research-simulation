@@ -50,3 +50,6 @@ Thumbs.db
 # csv
 *.csv
 *.csv:Zone.Identifier
+
+# 隔离工作区（git worktree 检出，不应入库）
+.worktrees/
