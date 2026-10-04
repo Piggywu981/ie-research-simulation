@@ -25,6 +25,9 @@ const frame = (over: Partial<SaveFile> = {}): SaveFile => ({
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  //  spies 也在这里统一收：下面「不碰 localStorage」一例中途断言失败时，内联的 mockRestore 走不到，
+  // 活的 spy 会留给同文件后续用例。
+  vi.restoreAllMocks();
 });
 
 describe('规范化序列化 canonicalStringify', () => {
@@ -91,6 +94,14 @@ describe('规范化序列化 canonicalStringify', () => {
     expect(canonicalStringify({ x: shared, y: shared })).toBe('{"x":{"v":1},"y":{"v":1}}');
   });
 
+  it('稀疏数组的空洞折成 null：拼出来的仍是合法 JSON，且与 JSON.stringify 同串', () => {
+    // value.map 会保留空洞，join 出来是 "[,1]"（parse 不回去）；Array.from 读成 undefined → 'null'
+    const sparse = [, 1] as unknown[];
+    expect(canonicalStringify(sparse)).toBe('[null,1]');
+    expect(canonicalStringify(sparse)).toBe(JSON.stringify(sparse));
+    expect(() => JSON.parse(canonicalStringify(sparse))).not.toThrow();
+  });
+
   it('NaN / Infinity 经 JSON.stringify 变 null：{cash:NaN} 与 {cash:null} 同串（已知取舍）', () => {
     // 这是 JSON.stringify 的既有语义，不为此另造格式：非有限现金本就由审计侧按「读数非有限 → null」处理，
     // 而哈希按 §4.4 只是指纹、不是结论——记在这里，别让它读起来像个保证。
@@ -137,8 +148,8 @@ describe('哈希指纹 digestText', () => {
     expect(await digestText('hello')).toBe('sha256:2cf24dba5fb0a30e');
     // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     expect(await digestText('')).toBe('sha256:e3b0c44298fc1c14');
-    // 中文：TextEncoder 走 UTF-8，若按 UTF-16 编码这两个值都会变
-    expect(await digestText('企业')).toMatch(/^sha256:[0-9a-f]{16}$/);
+    // 中文：TextEncoder 走 UTF-8，若按 UTF-16 编码这个值会变（409d0719010a46eecde9d1fdcccb856bc334c584cbdd263e5f66b20747e8234f）
+    expect(await digestText('企业')).toBe('sha256:409d0719010a46ee');
   });
 
   it('返回 sha256:<16 位小写 hex>；两次一致，改一个字符即不同', async () => {
@@ -165,6 +176,15 @@ describe('哈希指纹 digestText', () => {
     expect(d).toBe('unavailable:error');          // Error.prototype.name='Error' → 小写
     expect(/^(sha256:[0-9a-f]{16}|unavailable:.+)$/.test(d)).toBe(true);
   });
+
+  it('digest 给出的字节数不对（空/短/undefined）时算 unavailable:bad-digest，不得带 sha256: 前缀出门', async () => {
+    // S-T7 按前缀分派：带 `sha256:` 的残缺值会被当成"已算出的指纹"去比对，
+    // 印出来就是「指纹与包内记录不一致」这条假证（评审 Task 4 new finding #2）。
+    for (const bad of [undefined, new Uint8Array(0), new Uint8Array([1, 2, 3])]) {
+      vi.stubGlobal('crypto', { subtle: { digest: () => Promise.resolve(bad) } });
+      expect(await digestText('hello')).toBe('unavailable:bad-digest');
+    }
+  });
 });
 
 describe('逐帧指纹 digestFrame', () => {
@@ -187,17 +207,22 @@ describe('逐帧指纹 digestFrame', () => {
     expect(await digestFrame(frame({ enterpriseName: '企业2' }))).toBe(base);
   });
 
-  it('内容字段逐一参与指纹：cash / version / timestamp / resetCount / id', async () => {
+  it('内容字段逐一参与指纹：cash / 流水日志 / version / timestamp / resetCount / id', async () => {
     const f = frame();
     const base = await digestFrame(f);
     const bumpCash = frame();
     bumpCash.state.finance.cash += 1;
+    const bumpLogs = frame();
+    // 单验 cash 不够：若指纹哪天被窄化成只覆盖 state.finance，改流水日志（审计链读的就是它）
+    // 就悄悄不再改变指纹，而全套用例仍是绿的。
+    bumpLogs.state.operation.financialLogs.push({} as never);
     const changed = [
       frame({ version: SAVE_FORMAT_VERSION + 1 }),
       frame({ timestamp: 2 }),
       frame({ resetCount: 1 }),
       frame({ id: 's2' }),
       bumpCash,
+      bumpLogs,
     ];
     for (const g of changed) {
       expect(await digestFrame(g)).not.toBe(base);

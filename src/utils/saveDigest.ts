@@ -33,7 +33,9 @@ function canonicalize(value: unknown, onPath: Set<object>): string {
   const text = value instanceof Date
     ? JSON.stringify(value)
     : Array.isArray(value)
-      ? `[${value.map((item) => canonicalize(item, onPath)).join(',')}]`
+      // Array.from 而非 value.map：map 保留稀疏数组的空洞，join 出来是 "[,1]"——**不是合法 JSON**，
+      // 也与 JSON.stringify([,1]) === "[null,1]" 对不上。Array.from 把空洞读成 undefined，经 canonicalize 落 null。
+      ? `[${Array.from(value).map((item) => canonicalize(item, onPath)).join(',')}]`
       : canonicalizeRecord(value as Record<string, unknown>, onPath);
   onPath.delete(value);
   return text;
@@ -59,6 +61,10 @@ export async function digestText(text: string): Promise<string> {
     // Array.from 而非 [...new Uint8Array(buf)]：本仓库 tsconfig 是 target es5，展开 typed array 要
     // downlevelIteration（tsc 直接报 TS2802），而字节序拼接的结果完全一致。
     const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    // 算得出结果但字节数不对（异常/被截断的 subtle 实现）不能带着 `sha256:` 前缀出去：
+    // S-T7 按前缀分派（`plan` Task 7），带前缀的残缺值会被当成"已算出的指纹"去比对，
+    // 印出来就是「指纹与包内记录不一致」这条假证——正是下面 catch 分支要避免的事。
+    if (hex.length !== 64) return 'unavailable:bad-digest';
     return `sha256:${hex.slice(0, 16)}`;
   } catch (error) {
     // 摘要调用本身失败（策略拒绝、上下文被销毁等）也归入"未计算"这一类：措辞由 S-T7/S-T8 的文案给，
