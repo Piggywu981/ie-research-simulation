@@ -181,6 +181,20 @@ describe('出售厂房', () => {
     expect(store().validationError).toContain('买断');
   });
 
+  it('暂停（教学讲解模式）下出售被拒且状态零变化', () => {
+    // isPaused 守卫在业务校验之前：即便厂房已腾空、售价可入应收，也不得留下任何痕迹
+    // （权属不转 none、应收 4Q 档不加价、不写 q-12 日志）。
+    emptyLargeFactory();
+    store().togglePaused();
+    const snapshot = JSON.stringify(store().state);
+    store().sellFactory('factory-1');
+    expect(store().validationError).toContain('暂停');
+    expect(JSON.stringify(store().state)).toBe(snapshot);
+    expect(store().state.production.factories[0].holding).toBe('owned');
+    expect(store().state.finance.accountsReceivable).toEqual([0, 0, 0, 15]);
+    expect(store().state.operation.financialLogs.some(l => l.stepId === 'q-12')).toBe(false);
+  });
+
   it('出售后第4个季度初收到该笔应收', () => {
     emptyLargeFactory();
     store().sellFactory('factory-1');
@@ -197,6 +211,23 @@ describe('出售厂房', () => {
     expect(store().validationError).toBeNull();
     expect(store().state.finance.cash).toBe(20 + 12);
     expect(store().state.finance.accountsReceivable[3]).toBe(55 - 14);
+  });
+
+  it('厂房款排在最后动用：更早账期先被扣光（规格 §9-4 前提）', () => {
+    // 上一条只让 [3] 档非零，扣减方向换成 3→0 也一样通过；本例给 [0] 档放 7M，
+    // 于是"厂房款最后被动用"才真正被断言：若遍历方向反了会得到 [7,0,0,41]。
+    emptyLargeFactory();
+    const s = store().state;
+    useEnterpriseStore.setState({
+      state: { ...s, finance: { ...s.finance, accountsReceivable: [7, 0, 0, 15] as [number, number, number, number] } },
+    });
+    store().sellFactory('factory-1');
+    expect(store().validationError).toBeNull();
+    expect(store().state.finance.accountsReceivable).toEqual([7, 0, 0, 55]);
+    store().discountReceivable(14);
+    expect(store().validationError).toBeNull();
+    expect(store().state.finance.accountsReceivable).toEqual([0, 0, 0, 48]);
+    expect(store().state.finance.cash).toBe(20 + 12);
   });
 
   it('未持有的槽位不能放置生产线', () => {

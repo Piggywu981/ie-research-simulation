@@ -35,4 +35,18 @@ describe('资金贴现', () => {
     expect(store().state.finance.cash).toBe(32); // 20 + 12
     expect(store().state.finance.accountsReceivable).toEqual([0, 0, 0, 1]);
   });
+
+  it('扣减方向：只让最早账期先动（[5,0,10,40] 贴现14 → [0,0,1,40]）', () => {
+    // 上面的用例四档里只有 [3] 非零，无论循环方向如何结果都一样，检测不出反向遍历；
+    // 规格 §7-8 的前提"厂房款（[3] 档）最后被动用"依赖 enterpriseStore.ts:616-620 的 0→3 方向，
+    // 因此这里刻意让 0/2/3 三档都非零：若实现改成 3→0，结果会是 [5,0,10,26]，本用例必须失败。
+    const s = store().state;
+    useEnterpriseStore.setState({
+      state: { ...s, finance: { ...s.finance, accountsReceivable: [5, 0, 10, 40] as [number, number, number, number] } },
+    });
+    store().discountReceivable(14);
+    expect(store().validationError).toBeNull();
+    expect(store().state.finance.accountsReceivable).toEqual([0, 0, 1, 40]);
+    expect(store().state.finance.cash).toBe(32); // 20 + 到账12（14M ÷7 = 2M 贴息）
+  });
 });
