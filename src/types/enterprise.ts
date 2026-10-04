@@ -307,6 +307,17 @@ export interface SaveFile {
   createdAt: string;
 }
 
+// 存档包（规格 §4.2）：一帧当前状态 + 全部历史快照 + 指纹
+export interface SavePackage {
+  format: 'ie-sandbox-save';
+  packageVersion: 1;
+  exportedAt: string;
+  app: { saveVersion: number; year: number; quarter: number };
+  current: EnterpriseState;
+  saves: SaveFile[];
+  digests: { package: string; frames: Record<string, string> };
+}
+
 // 生产线类型余量类型
 export interface ProductionLineLimits {
   automatic: number;
