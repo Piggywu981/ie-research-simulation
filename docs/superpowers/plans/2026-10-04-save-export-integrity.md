@@ -79,10 +79,10 @@ describe('现金流水账不变量', () => {
     expect(s.operation.financialLogs.filter(l => l.kind === 'summary')).toHaveLength(0);
   });
 
-  it('脚本化 8 个季度：Σflow === 期末现金，且恰好产出 8 条 summary 共 -16M', () => {
-    useEnterpriseStore.setState({
-      state: { ...store().state, finance: { ...store().state.finance, cash: 200 } },
-    });
+  it('脚本化 8 个季度：Σflow === 期末现金，且恰好产出 8 条 summary 共 -36M', () => {
+    // 注入必须入账：不变量「Σflow === 现金」的前提是每次现金变动都有日志，
+    // 直接 setState 改 cash 会让公式必然差 180（规格 §2 方法学缺陷勘误）
+    store().registerOtherCashFlow('测试注资', 180);
     store().applyShortTermLoan();
     store().discountReceivable(7);
     for (let i = 0; i < 8; i++) store().nextQuarter();
@@ -90,18 +90,20 @@ describe('现金流水账不变量', () => {
     const logs = store().state.operation.financialLogs;
     const summaries = logs.filter(l => l.kind === 'summary');
     expect(summaries).toHaveLength(8);
-    expect(summaries.reduce((t, l) => t + l.cashChange, 0)).toBe(-16);
-    // 关键：把 summary 加回去就会得到 -26，与实际净变动 -10 不符（规格 §2 实测）
+    expect(summaries.reduce((t, l) => t + l.cashChange, 0)).toBe(-36);
+    // 关键：把 summary 加回去会得 -26（Σflow 10 + Σsummary -36），与实际净变动 -10 不符（规格 §2）
     expect(flowSum(logs)).toBe(store().state.finance.cash);
   });
 
   it('每条 flow 日志的 newCash 都不为 0 占位', () => {
-    useEnterpriseStore.setState({
-      state: { ...store().state, finance: { ...store().state.finance, cash: 200 } },
-    });
+    store().registerOtherCashFlow('测试注资', 180);
+    // 必须买一条带安装期的线（semi-automatic 安装 2 季），否则 installPaymentLogs 恒空、
+    // 三处逃逸之一的安装分期根本没被跑到（评审 S-T1 Important 1）
+    store().addProductionLine('factory-1', 'semi-automatic', 'P1');
     for (let i = 0; i < 8; i++) store().nextQuarter();
-    const bad = store().state.operation.financialLogs
-      .filter(l => l.kind === 'flow' && l.cashChange !== 0 && l.newCash === 0);
+    const logs = store().state.operation.financialLogs;
+    expect(logs.some(l => l.description.includes('安装投资分期') && l.newCash !== 0)).toBe(true);
+    const bad = logs.filter(l => l.kind === 'flow' && l.cashChange !== 0 && l.newCash === 0);
     expect(bad).toEqual([]);
   });
 });
@@ -269,6 +271,8 @@ Expected: FAIL —— `入库…` 单元格为 `9M`（5+4），证明 summary �
 - [ ] **Step 4: 改页面合计并删死代码**
 
 `calculateQuarterTotal` 的过滤同样加 `log.kind === 'flow'`；并删除那段永不命中的文本排除（`description.includes('季初现金盘点')` 等，约 `:402-415`）——`q-1` 的真实描述是 `(...)` 括号串，这个分支从来没起过作用，留着会误导后人。改为注释说明排除依据是 `kind`。
+
+**同一文件的第二处死匹配（评审 S-T1 发现，本任务一并处理）**：`OperationCenter.tsx:203-205` 也有一处按 `季初现金盘点` 文本匹配的死分支。它今天 fall back 到 `cashFlowHistory` 的正确数字；**不要**为了"统一"而把它改成读 `q-1` 日志的 `newCash`——那个值是 `initialCash + cashIncrease`，不扣短贷本息与应付归还，会显示错数。正确做法是删掉死匹配、保留 `cashFlowHistory` 来源，并在注释里写明原因。
 
 - [ ] **Step 5: 跑测试确认通过**
 
