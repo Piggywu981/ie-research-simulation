@@ -297,9 +297,9 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 
 **Interfaces:**
 - Consumes: Task 1 的 `kind`、`FinancialLogRecord`、`EnterpriseState`
-- Produces: 新口径的 `summary.cashChange` = 自上一条重述串以来的**全部**净变动；类型 `AuditStatus` / `AuditCause` / `FrameAudit`；函数 `auditFrame(save: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（按 `timestamp` 升序、不改动入参）、`firstDivergingFrame(results: FrameAudit[]): FrameAudit | null`、`auditSummary(results): { total; ok; mismatch; noAnchor }`、`CAUSE_TEXT`。`FrameAudit` 字段名固定为 `flowRebuilt` / `restatedRebuilt` / `actualCash` / `cause`，其中两个重建值类型为 `number | null`（`no-anchor` 用 `null`，不用 `NaN`——`NaN` 过 `JSON.stringify` 会变 `null`，让报告与面板读数失真）。S-T5/S-T7/S-T8 按此消费。
+- Produces: 新口径的 `summary.cashChange` = 自上一条重述串以来的**全部**净变动；类型 `AuditStatus` / `AuditCause` / `RestatementCaliber` / `FrameAudit`；函数 `auditFrame(save: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（按 `timestamp` 升序、不改动入参）、`firstDivergingFrame(results: FrameAudit[]): FrameAudit | null`、`auditSummary(results): { total; ok; mismatch; noAnchor }`、`CAUSE_TEXT`。`FrameAudit` 字段名固定为 `flowRebuilt` / `restatedRebuilt` / `actualCash` / `cause` / `restatementCaliber`，其中两个重建值类型为 `number | null`（`no-anchor` 用 `null`，不用 `NaN`——`NaN` 过 `JSON.stringify` 会变 `null`，让报告与面板读数失真）。`restatementCaliber` 三值语义与 UI 显示义务写在 `src/utils/audit.ts` 的字段注释里，S-T5/S-T7/S-T8 直接展示、不要再读 `SaveFile.version` 自行推断。S-T5/S-T7/S-T8 按此消费。
 
-**为什么要多改这一处 store**（规格 §4.4 第四次更正）：原 `quarterEndLog.cashChange = finalCashChange` 只累加引擎自动项，不含玩家该季主动交易。实测一次带 180M 注资的 5 季存档：A 侧 202 = 现金 202 ✓，B 侧仅 22 ✗。B 式重建要成立，重述串必须先变成"整季全部净变动"。该字段今天没有别的消费方（S-T2 的合计已过滤 `kind`，页面读的是它的 `newCash`），半径小。
+**为什么要多改这一处 store**（规格 §4.4 第四次更正）：原 `quarterEndLog.cashChange = finalCashChange` 只累加引擎自动项，不含玩家该季主动交易。实测一次带 180M 注资的 5 季存档：A 侧 202 = 现金 202 ✓，B 侧仅 22 ✗。B 式重建要成立，重述串必须先变成"整季全部净变动"。原计划以为"该字段没有别的消费方"，评审 I3 证伪——改口径前仍有两处读 `summary.cashChange`：`src/app/page.tsx` 的最近流水列表与 `src/components/OperationCenter.tsx` 的已完成步骤判定，两处均已按 `kind` 过滤/排除（现为 `src/app/page.tsx:335`、`src/components/OperationCenter.tsx:702`）后才允许口径变更落地。
 
 - [ ] **Step 0: 写重述串口径的失败测试**
 
@@ -915,12 +915,13 @@ git commit -m "feat(save): 存档包解析与结构校验，畸形输入点名�
 
 **Files:**
 - Modify: `src/store/enterpriseStore.ts`（`importSaveFiles`、`applyImportedState` 两个 action）
+- Modify: `src/utils/audit.ts`（新增 `CALIBER_TEXT` 文案表，供面板与 Task 8 报告同源）
 - Modify: `src/components/SaveLoadPanel.tsx`（文件入口、预览面板、两个动作）
 - Test: `tests/saveImport.test.ts`（新建）
 
 **Interfaces:**
-- Consumes: Task 3 `auditFrames`/`auditSummary`、Task 4 `digestFrame`、Task 5 `SavePackage`、Task 6 `parseSavePackage`
-- Produces: store 上 `importSaveFiles(saves: SaveFile[]): { added: number; renamed: number }`、`applyImportedState(state: EnterpriseState): void`
+- Consumes: Task 3 `auditFrames`/`auditSummary`/`FrameAudit.restatementCaliber`、Task 4 `digestFrame`、Task 5 `SavePackage`、Task 6 `parseSavePackage`
+- Produces: store 上 `importSaveFiles(saves: SaveFile[]): { added: number; renamed: number }`、`applyImportedState(state: EnterpriseState, fromVersion: number): void`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -960,7 +961,7 @@ describe('导入落库语义（默认不覆盖）', () => {
   });
 
   it('applyImportedState 只换当前屏，不写存档列表', () => {
-    store().applyImportedState(frame('s1', 77).state);
+    store().applyImportedState(frame('s1', 77).state, 4);
     expect(store().state.finance.cash).toBe(77);
     expect(store().getSaveFiles()).toHaveLength(0);
   });
@@ -986,7 +987,7 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
 
 ```ts
   importSaveFiles: (saves: SaveFile[]) => { added: number; renamed: number };
-  applyImportedState: (state: EnterpriseState) => void;
+  applyImportedState: (state: EnterpriseState, fromVersion: number) => void;
 ```
 
 实现（放在 `loadGame` 之后）：
@@ -1001,13 +1002,13 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
     const taken = new Set(existing.map((f) => f.id));
     let renamed = 0;
     const toAdd = saves.map((save) => {
-      if (!taken.has(save.id)) { taken.add(save.id); return { ...save, state: migrateState(save.state) }; }
+      if (!taken.has(save.id)) { taken.add(save.id); return { ...save, state: migrateState(save.state, save.version) }; }
       let n = 1;
       while (taken.has(`${save.id}-imported-${n}`)) n++;
       const id = `${save.id}-imported-${n}`;
       taken.add(id);
       renamed++;
-      return { ...save, id, state: migrateState(save.state) };
+      return { ...save, id, state: migrateState(save.state, save.version) };
     });
     const merged = [...toAdd, ...existing];
     localStorage.setItem('enterpriseSaveFiles', JSON.stringify(merged));
@@ -1016,24 +1017,53 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
     return { added: toAdd.length, renamed };
   },
 
-  applyImportedState: (imported) => {
+  applyImportedState: (imported, fromVersion) => {
     if (get().state.isPaused) {
       set({ validationError: '运营已暂停，请先继续运营再导入' });
       return;
     }
-    set({ state: migrateState(imported) });
+    set({ state: migrateState(imported, fromVersion) });
     get().addOperationLog('导入存档', `设为当前进度：第${imported.operation.currentYear}年第${imported.operation.currentQuarter}季`);
   },
 ```
 
 `migrateState` 目前是模块私有函数、在这两个 action 内可直接引用；若跨作用域不可见，则把 `const migrateState = ...` 前加 `export`（不新建包装、不复制逻辑）。
 
+它的签名是 Task 3 第二轮评审定下的 `migrateState(state, fromVersion)`（`fromVersion: number | undefined`）——旧档的**重述串口径换算**必须知道原存档版本才能决定要不要重建（见 `src/utils/restatement.ts`），所以本任务不能像原计划那样只传 state：`importSaveFiles` 从每帧自带的 `save.version` 取，`applyImportedState` 由调用方把 `pkg.app.saveVersion` 传进来。签名以 store 里的实际定义为准，不要改回去。
+
 - [ ] **Step 4: UI 编排**
+
+先在 `src/utils/audit.ts` 的 `CAUSE_TEXT` 之后加文案表（Task 8 的报告与本面板共用，别再抄第二份）：
+
+```ts
+// 与 FrameAudit.restatementCaliber 的字段注释一一对应；UI 与报告只取这里的文案。
+export const CALIBER_TEXT: Record<RestatementCaliber, string> = {
+  'v4': '重述串为新口径，可作金额证据',
+  'legacy-converted': '旧档重述串已换算为新口径，判定仍只依据流水',
+  'legacy-unconverted': '旧口径链，不作金额结论',
+};
+```
 
 `SaveLoadPanel.tsx` 加：
 
 ```tsx
-  const [pending, setPending] = useState<{ pkg: SavePackage; summary: ReturnType<typeof auditSummary>; mismatches: string[]; digestMismatch: string[] } | null>(null);
+// 面板顶部 import：文案表与判据同源（见 Step 3 的 audit.ts），UI 只照抄，
+// 绝不再自行读 SaveFile.version 推断（一条规则写两处就是版本漂移的起点）
+import { auditFrames, auditSummary, CAUSE_TEXT, CALIBER_TEXT, firstDivergingFrame } from '../utils/audit';
+import type { FrameAudit } from '../utils/audit';
+```
+
+组件内加：
+
+```tsx
+  const [pending, setPending] = useState<{
+    pkg: SavePackage;
+    summary: ReturnType<typeof auditSummary>;
+    mismatches: string[];
+    digestMismatch: string[];
+    diverging: FrameAudit | null;
+    caliberNotes: string[];
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const handleFilePicked = async (file: File | undefined) => {
@@ -1047,24 +1077,29 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
       const frames = pkg.saves.length > 0 ? pkg.saves : [{ id: 'current', name: '当前进度', enterpriseName: '企业1', timestamp: Date.now(), resetCount: 0, version: pkg.app.saveVersion, state: pkg.current, createdAt: pkg.exportedAt }];
       const results = auditFrames(frames);
       const mismatches = results.filter(r => r.status !== 'ok')
-        .map(r => r.status === 'no-anchor' ? `${r.saveName}：起算链不完整` : `${r.saveName}：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），本帧现金 ${r.actualCash}M`);
+        .map(r => r.status === 'no-anchor'
+          ? `${r.saveName}：起算链不完整（缺期初现金种子），本帧现金 ${r.actualCash}M`
+          : `${r.saveName}（第${r.year}年第${r.quarter}季）：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），本帧现金 ${r.actualCash}M`);
+      // 包内定位：第一处不平的帧才是"分歧起点"，其余帧的不平是它的下游后果（Task 3 定的判据）
+      const diverging = firstDivergingFrame(results);
       const digestMismatch: string[] = [];
       for (const save of frames) {
         const declared = pkg.digests.frames[save.id];
         if (!declared || !declared.startsWith('sha256:')) continue;
         if (await digestFrame(save) !== declared) digestMismatch.push(`${save.name} 的指纹与包内记录不一致`);
       }
-      setPending({ pkg, summary: auditSummary(results), mismatches, digestMismatch });
+      const caliberNotes = [...new Set(results.map(r => CALIBER_TEXT[r.restatementCaliber]))];
+      setPending({ pkg, summary: auditSummary(results), mismatches, digestMismatch, diverging, caliberNotes });
     } finally {
       setBusy(false);
     }
   };
 ```
 
-预览面板（`pending` 非空时渲染，此时**未改动任何状态**）显示：帧数与时间跨度、当前帧 `第Y年第Q季 / 现金 / 应收合计 / 长短期贷款本金合计 / 重置次数`、`mismatches`（红字，**不阻断**）、`digestMismatch`。两个动作按钮：
+预览面板（`pending` 非空时渲染，此时**未改动任何状态**）显示：帧数与时间跨度、当前帧 `第Y年第Q季 / 现金 / 应收合计 / 长短期贷款本金合计 / 重置次数`、`mismatches`（红字，**不阻断**）、`digestMismatch`、`diverging`（非 null 时一行「分歧始于：X（第Y年第Q季）」，null 时「未发现账实分歧」）、`caliberNotes`（灰字小字，逐条列出包内出现过的 B 侧读数身份）。两个动作按钮：
 
 - 「仅加入存档列表」（默认样式）→ `const r = importSaveFiles(pkg.saves)` → `setValidationError(null)` + 关闭面板；暂停时 `disabled` 并给可见说明。
-- 「设为当前进度」→ `applyImportedState(pkg.current)` → 关闭面板；同样受暂停门控。
+- 「设为当前进度」→ `applyImportedState(pkg.current, pkg.app.saveVersion)` → 关闭面板；同样受暂停门控。
 - 「取消」→ `setPending(null)`，不产生任何写操作。
 
 文件入口用 `<input type="file" accept="application/json" className="hidden" onChange={e => handleFilePicked(e.target.files?.[0])} />` + 一个「导入存档包」按钮触发 `click()`；该入口只读，暂停时可用。
@@ -1135,16 +1170,18 @@ export function buildAuditReport(
   boundaryLine: string,
 ): { json: string; text: string } {
   const summary = auditSummary(results);
+  const diverging = firstDivergingFrame(results);
   const lines = [
     boundaryLine,
     '',
     `导出时间：${pkg.exportedAt}`,
     `包指纹：${pkg.digests.package}`,
     `帧统计：共 ${summary.total}，通过 ${summary.ok}，不符 ${summary.mismatch}，起算链不完整 ${summary.noAnchor}`,
+    `分歧起点：${diverging ? `${diverging.saveName}（第${diverging.year}年第${diverging.quarter}季）` : '未发现账实分歧'}`,
     '',
     ...results.map((r) => r.status === 'ok'
-      ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${r.actualCash}M）`
-      : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] ${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${r.flowRebuilt}M，按重述串重建 ${r.restatedRebuilt}M，帧内现金 ${r.actualCash}M）`),
+      ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${r.actualCash}M；${CALIBER_TEXT[r.restatementCaliber]}）`
+      : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] ${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${r.flowRebuilt}M，按重述串重建 ${r.restatedRebuilt}M，帧内现金 ${r.actualCash}M；${CALIBER_TEXT[r.restatementCaliber]}）`),
   ];
   return {
     text: lines.join('\n'),
