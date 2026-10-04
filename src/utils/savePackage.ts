@@ -273,7 +273,10 @@ export async function parseSavePackage(text: string): Promise<PackageParseResult
     try {
       parsed = JSON.parse(text);
     } catch {
-      // SyntaxError（残缺 JSON）与 RangeError（深嵌套爆栈）都归这一句：那份文本确实不是有效 JSON
+      // 解析器抛的一切都在这里塌成同一句（实测这一路给的都是 SyntaxError：残缺/尾逗号/注释/未闭合）。
+      // 深嵌套**不**在这一路里：V8 的 JSON.parse 是迭代实现，实测 100 万层的平衡数组照样解析成功，
+      // 所以"深度"不是解析闸能挡的事——递归哈希（canonicalStringify）那一侧的阈值由 S-T7 的
+      // digestFrame try/catch 兜，本函数不负责（也兜不住：放行与否只看字段形状）。
       return { ok: false, reason: '文件不是有效 JSON' };
     }
     if (!isPlainObject(parsed)) return { ok: false, reason: '顶层结构不是对象，无法当成存档包读取' };

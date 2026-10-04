@@ -461,6 +461,28 @@ describe('存档包解析：畸形输入点名拒绝', () => {
     }
   });
 
+  it('id 撞上 Object.prototype 的键名不许误报重复（去重用 Set，不用"以 id 为键的对象"）', async () => {
+    // 朴素写法 `seen[id] = true` 在这四个 id 上都会走偏：`seen['__proto__'] = true` 走 setter 落不进自有键、
+    // `seen['constructor']` 一读就是函数（真值）→ 第一帧就被判"与前面的帧重复"，一份合法包就此被拒。
+    // 这条不只是洁癖：Task 7 的"仅加入存档列表"会给同 id 的帧追加 `${id}-imported-${n}`，
+    // 存档 id 本来就是外部可编辑字符串，撞进原型键名是完全可能的手改结果。
+    const ids = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf'];
+    const pkg = bag(await validBytes());
+    pkg.saves = ids.map((id, i) => frameOf({ id, timestamp: i + 1 }));
+    const r = await parseSavePackage(JSON.stringify(pkg));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.pkg.saves.map((s) => s.id)).toEqual(ids);
+
+    // 而这四个键名里真出现重复时仍必须拒（两种失败模式在同一例里钉住）
+    const dup = bag(await validBytes());
+    dup.saves = [frameOf({ id: 'constructor', timestamp: 1 }), frameOf({ id: 'constructor', timestamp: 2 })];
+    expect(await reasonOf(JSON.stringify(dup))).toContain('id 与前面的帧重复');
+
+    const dupProto = bag(await validBytes());
+    dupProto.saves = [frameOf({ id: '__proto__', timestamp: 1 }), frameOf({ id: '__proto__', timestamp: 2 })];
+    expect(await reasonOf(JSON.stringify(dupProto))).toContain('saves[1].id 与前面的帧重复');
+  });
+
   it('超 8MB 直接拒绝', async () => {
     const r = await parseSavePackage('{"a":"' + 'x'.repeat(9 * 1024 * 1024) + '"}');
     expect(r.ok).toBe(false);
@@ -518,7 +540,10 @@ describe('存档包解析：对任何输入都不抛不 reject', () => {
     ['undefined 字面量', '{"a":undefined}'],
     ['注释', '{"a":1}//x'],
     ['深嵌套对象（20 层）', JSON.stringify(deep(20))],
-    ['深嵌套数组（爆栈那种）', `[${'['.repeat(20000)}`],
+    ['两万个未闭合的左括号', `[${'['.repeat(20000)}`],
+    // 一万个**平衡**嵌套：V8 的 JSON.parse 是迭代实现，实测 100 万层都不爆栈——所以深嵌套不是解析闸能挡的，
+    // 它必须一路走到形状检查并在那里被拒（顶层是数组），而不是抛出。递归哈希那侧的深度归 S-T7 的 try/catch。
+    ['一万个平衡嵌套的数组', `${'['.repeat(10000)}1${']'.repeat(10000)}`],
     ['该是对象处给了数组', '{"format":"ie-sandbox-save","packageVersion":1,"current":[],"saves":[]}'],
     ['该是数组处给了对象', '{"format":"ie-sandbox-save","packageVersion":1,"saves":{},"current":{}}'],
     ['帧是数组', '{"format":"ie-sandbox-save","packageVersion":1,"saves":[[]],"current":{}}'],
@@ -766,6 +791,15 @@ describe('存档包解析：放行即下游可读（不经过 store 的等价断
     const crashPkg = bag(text);
     crashPkg.saves = [crashing];
     expect(await reasonOf(JSON.stringify(crashPkg))).toContain('financialLogs[0].description');
+
+    // 条目是 null 时也先自证崩点：kindOfLog 读 `l.kind`（restatement.ts:29），null 当场抛——
+    // 这正是简报片段 `isRecord(l) ? l.kind : undefined` 那处会放过去的一种
+    const nullRow = frameOf();
+    nullRow.state.operation.financialLogs = [null];
+    expect(() => auditFrame(nullRow as unknown as SaveFile)).toThrow();
+    const nullRowPkg = bag(text);
+    nullRowPkg.saves = [nullRow];
+    expect(await reasonOf(JSON.stringify(nullRowPkg))).toContain('saves[0].operation.financialLogs[0]');
 
     // 旧档的"字段缺失"是 migrateState 的活，不是拒绝的理由（v1/v2 本就没有 loans）
     const legacy = bag(text);
