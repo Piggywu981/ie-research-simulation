@@ -296,7 +296,7 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 
 **Interfaces:**
 - Consumes: Task 1 的 `kind`、`FinancialLogRecord`、`EnterpriseState`
-- Produces: 类型 `AuditStatus` / `FrameAudit`；函数 `auditFrame(frame: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（内部按 `timestamp` 升序并把跨帧的季度现金差写进 `quarterMismatch`）、`auditSummary(results: FrameAudit[]): { total; ok; mismatch; noAnchor }`
+- Produces: 类型 `AuditStatus` / `AuditCause` / `FrameAudit`；函数 `auditFrame(save: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（按 `timestamp` 升序）、`firstDivergingFrame(results: FrameAudit[]): FrameAudit | null`、`auditSummary(results): { total; ok; mismatch; noAnchor }`。`FrameAudit` 的字段名固定为 `flowRebuilt` / `restatedRebuilt` / `actualCash` / `cause`，S-T5/S-T7/S-T8 按此消费。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -305,7 +305,7 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 ```ts
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
-import { auditFrame } from '../src/utils/audit';
+import { auditFrame, auditFrames, auditSummary, firstDivergingFrame } from '../src/utils/audit';
 import { SAVE_FORMAT_VERSION, type SaveFile } from '../src/types/enterprise';
 
 const store = () => useEnterpriseStore.getState();
@@ -320,62 +320,73 @@ const frame = (id = 's1', mutate?: (s: ReturnType<typeof createFreshState>) => v
   return { id, name: `帧${id}`, enterpriseName: '企业1', timestamp: 1, resetCount: 0, version: SAVE_FORMAT_VERSION, state, createdAt: 'x' };
 };
 
-describe('账实重演算', () => {
-  it('合法帧通过：Σflow 等于现金', () => {
+describe('账实重演算（双重建）', () => {
+  it('合法帧通过：两种重建都等于现金', () => {
     const r = auditFrame(frame());
     expect(r.status).toBe('ok');
-    expect(r.expectedCash).toBe(r.actualCash);
+    expect(r.flowRebuilt).toBe(20);
+    expect(r.restatedRebuilt).toBe(20);
+    expect(r.actualCash).toBe(20);
   });
 
-  it('手改现金 +30M 报 mismatch，差额可算', () => {
+  it('只改帧末现金：两种重建都不平，cause = both', () => {
     const r = auditFrame(frame('s1', (s) => { s.finance.cash += 30; }));
     expect(r.status).toBe('mismatch');
-    expect(r.actualCash - r.expectedCash).toBe(30);
+    expect(r.cause).toBe('both');
+    expect(r.flowRebuilt).toBe(20);
+    expect(r.actualCash).toBe(50);
   });
 
-  it('手改某条 flow 的 cashChange 也报 mismatch', () => {
-    const r = auditFrame(frame('s1', (s) => { s.operation.financialLogs[0].cashChange = 25; }));
-    expect(r.status).toBe('mismatch');
-  });
-
-  it('summary 条目不参与演算', () => {
+  it('只改一条 summary 重述串：A 成 B 败，cause = restated-log', () => {
     const r = auditFrame(frame('s1', (s) => {
       s.operation.financialLogs.push({
         id: 'sum1', year: 1, quarter: 1, timestamp: 2, description: '第1年第1季度结束现金变动: 结余20M',
         cashChange: -8, newCash: 12, operator: '系统自动', stepId: undefined, kind: 'summary',
       });
     }));
-    expect(r.status).toBe('ok');
+    expect(r.status).toBe('mismatch');
+    expect(r.cause).toBe('restated-log');           // Σflow 仍等于现金，只有重述线被拉歪
   });
 
   it('缺初始现金种子时报 no-anchor 而非 mismatch', () => {
     const r = auditFrame(frame('s1', (s) => { s.operation.financialLogs = []; }));
     expect(r.status).toBe('no-anchor');
+    expect(r.cause).toBeNull();
   });
 
-  it('只改帧末现金（不动流水）时报 mismatch 并回落到本帧季度定位', () => {
-    const r = auditFrame(frame('s1', (s) => { s.finance.cash += 30; }));
-    expect(r.status).toBe('mismatch');
-    expect(r.quarterMismatch).toBeNull();          // 没有任何一季的流水与重述串互相矛盾
-    expect(r.cashMismatch).toEqual({ year: 1, quarter: 1, expectedCash: 20, actualCash: 50 });
-  });
-
-  it('真跑 5 个季后篡改第3季一条流水：定位到第1年第3季', () => {
-    useEnterpriseStore.setState({ state: createFreshState(), validationError: null });
-    useEnterpriseStore.setState({
-      state: { ...store().state, finance: { ...store().state.finance, cash: 200 } },
-    });
+  it('真跑 5 季：未篡改必须 ok，篡改一季流水后 cause = flow-log', () => {
+    store().registerOtherCashFlow('测试注资', 180);   // 注入必须入账，否则 A/B 双双不平（规格 §2 勘误）
     for (let i = 0; i < 5; i++) store().nextQuarter();
     const state = store().state;
+
     const untouched = auditFrame({ ...frame('real'), state });
-    expect(untouched.status).toBe('ok');           // 真实运行结果必须天然平账
+    expect(untouched.status).toBe('ok');             // 真实运行结果天然平账，这是本任务最重要的断言
+    expect(untouched.flowRebuilt).toBe(untouched.actualCash);
+    expect(untouched.restatedRebuilt).toBe(untouched.actualCash);
 
     const tampered = JSON.parse(JSON.stringify(state)) as typeof state;
     const target = tampered.operation.financialLogs.find(l => l.year === 1 && l.quarter === 3 && l.kind === 'flow');
     target!.cashChange += 7;
     const r = auditFrame({ ...frame('tampered'), state: tampered });
     expect(r.status).toBe('mismatch');
-    expect(r.quarterMismatch).toMatchObject({ year: 1, quarter: 3 });
+    expect(r.cause).toBe('flow-log');                // 重述线仍与现金吻合，只有流水被改
+  });
+});
+
+describe('包内定位', () => {
+  const stamped = (id: string, ts: number, cash: number): SaveFile =>
+    ({ ...frame(id, (s) => { s.finance.cash = cash; }), timestamp: ts });
+
+  it('最早不平的那一帧给出"自第X年第Y季起"的坐标', () => {
+    const results = auditFrames([stamped('f3', 3, 99), frame('f1', (s) => { s.operation.currentQuarter = 1; }), stamped('f2', 2, 20)]);
+    expect(results.map(r => r.saveId)).toEqual(['f1', 'f2', 'f3']);  // 输入乱序也要按时间升序返回
+    expect(firstDivergingFrame(results)?.saveId).toBe('f3');
+    expect(firstDivergingFrame(results)?.quarter).toBe(1);
+    expect(auditSummary(results)).toEqual({ total: 3, ok: 2, mismatch: 1, noAnchor: 0 });
+  });
+
+  it('全部通过时 firstDivergingFrame 返回 null', () => {
+    expect(firstDivergingFrame(auditFrames([frame('a'), frame('b')]))).toBeNull();
   });
 });
 ```
@@ -389,87 +400,69 @@ Expected: FAIL —— `Cannot find module '../src/utils/audit'`。
 
 - [ ] **Step 3: 实现**
 
-新建 `src/utils/audit.ts`。定位思路（规格 §4.4）：**单帧内**逐季比较「该季 flow 合计」与「该季 summary 重述串合计」——重述串是应用自己结算出的整季净额，二者不等就说明该季的流水被动过；若逐季都等而帧末现金仍不平，则是 `cash` 字段本身被改，落到 `cashMismatch`。开场种子不计入季内比较，否则第 1 季天然不等。
+新建 `src/utils/audit.ts`。**帧内不做季度级猜测定位**（规格 §4.4 已两次更正：按 `(year,quarter)` 分桶会因年末日志被 remap 到 `(收尾年,4)`、重述串落在 `(新年,新季)` 而错位；按数组顺序累计也不行，因为 `quarterEndLog` 在 `allLogs` 里排在年末结算日志**之前**，每条标记都会假不等）。改为两条独立重建 + 包内定位：
+
+- **A：`Σ flow`（含 `初始现金` 种子）应等于该帧 `finance.cash`**
+- **B：`初始现金 + Σ summary`（重述串即各次推进的净额）也应等于该帧 `finance.cash`**
+
+A 成 B 败 → 重述串被改；A 败 B 成 → 流水条目被改；两者皆败 → 帧末现金被改；种子缺失 → `no-anchor`。季度定位交给**整包**：`auditFrames` 按 `timestamp` 升序找出**最早不平的那一帧**，报「自第X年第Y季起账实不符」——存档包本来就逐季携带快照（§4.2），这是最可靠也最好解释的定位来源。
 
 ```ts
 // 账实重演算（规格 §4.4）：只依赖 flow/summary 分类，不用 newCash、不用密码学、不跨帧拼接
 import type { EnterpriseState, FinancialLogRecord, SaveFile } from '../types/enterprise';
 
 export type AuditStatus = 'ok' | 'mismatch' | 'no-anchor';
-
-export interface QuarterMismatch {
-  year: number;
-  quarter: number;
-  flowDelta: number;
-  restatedDelta: number;
-}
-
-export interface CashMismatch {
-  year: number;
-  quarter: number;
-  expectedCash: number;
-  actualCash: number;
-}
+// 两种独立重建都不平时才落到 both；单侧失败可指名道姓
+export type AuditCause = 'flow-log' | 'restated-log' | 'both';
 
 export interface FrameAudit {
   saveId: string;
   saveName: string;
   year: number;
   quarter: number;
-  expectedCash: number;
+  flowRebuilt: number;      // A：Σ 全部 flow（含期初种子）
+  restatedRebuilt: number;  // B：期初种子 + Σ 全部 summary（逐次推进净额）
   actualCash: number;
   status: AuditStatus;
-  quarterMismatch: QuarterMismatch | null;
-  cashMismatch: CashMismatch | null;
+  cause: AuditCause | null;
 }
 
-const isSeed = (l: FinancialLogRecord) => l.description === '初始现金';
-const sumFlow = (logs: FinancialLogRecord[]) =>
-  logs.filter((l) => l.kind === 'flow').reduce((t, l) => t + l.cashChange, 0);
+const SEED_DESCRIPTION = '初始现金';
+const sumBy = (logs: FinancialLogRecord[], pick: (l: FinancialLogRecord) => boolean) =>
+  logs.filter(pick).reduce((t, l) => t + l.cashChange, 0);
 
 export function auditFrame(save: SaveFile): FrameAudit {
-  const logs = save.state.operation.financialLogs;
+  const logs = save.state.operation?.financialLogs ?? [];
   const base = {
     saveId: save.id,
     saveName: save.name,
-    year: save.state.operation.currentYear,
-    quarter: save.state.operation.currentQuarter,
+    year: save.state.operation?.currentYear ?? 0,
+    quarter: save.state.operation?.currentQuarter ?? 0,
     actualCash: save.state.finance.cash,
   };
-
-  // 种子缺失说明链条被截断，报「起算链不完整」而不是「账实不符」（规格 §4.4）
-  if (!logs.some((l) => l.kind === 'flow' && isSeed(l))) {
-    return { ...base, expectedCash: NaN, status: 'no-anchor', quarterMismatch: null, cashMismatch: null };
+  const seeds = logs.filter((l) => l.kind === 'flow' && l.description === SEED_DESCRIPTION);
+  if (seeds.length === 0) {
+    // 链条被截断时报「起算链不完整」而不是「账实不符」（规格 §4.4）
+    return { ...base, flowRebuilt: NaN, restatedRebuilt: NaN, status: 'no-anchor', cause: null };
   }
 
-  const expectedCash = sumFlow(logs);
-  if (expectedCash === base.actualCash) {
-    return { ...base, expectedCash, status: 'ok', quarterMismatch: null, cashMismatch: null };
-  }
+  const seedCash = sumBy(seeds, () => true);
+  const flowRebuilt = sumBy(logs, (l) => l.kind === 'flow');
+  const restatedRebuilt = seedCash + sumBy(logs, (l) => l.kind === 'summary');
+  const aOk = flowRebuilt === base.actualCash;
+  const bOk = restatedRebuilt === base.actualCash;
 
-  const quarters = [...new Set(logs.map((l) => `${l.year}|${l.quarter}`))].sort();
-  for (const key of quarters) {
-    const [year, quarter] = key.split('|').map(Number);
-    const inQuarter = logs.filter((l) => l.year === year && l.quarter === quarter);
-    const flowDelta = inQuarter.filter((l) => l.kind === 'flow' && !isSeed(l)).reduce((t, l) => t + l.cashChange, 0);
-    const restated = inQuarter.filter((l) => l.kind === 'summary');
-    if (restated.length === 0) continue; // 该季无重述串（例如当前季尚未收尾），无法判定，跳过
-    const restatedDelta = restated.reduce((t, l) => t + l.cashChange, 0);
-    if (flowDelta !== restatedDelta) {
-      return { ...base, expectedCash, status: 'mismatch', quarterMismatch: { year, quarter, flowDelta, restatedDelta }, cashMismatch: null };
-    }
-  }
-
-  return {
-    ...base,
-    expectedCash,
-    status: 'mismatch',
-    quarterMismatch: null,
-    cashMismatch: { year: base.year, quarter: base.quarter, expectedCash, actualCash: base.actualCash },
-  };
+  if (aOk && bOk) return { ...base, flowRebuilt, restatedRebuilt, status: 'ok', cause: null };
+  const cause: AuditCause = aOk ? 'restated-log' : bOk ? 'flow-log' : 'both';
+  return { ...base, flowRebuilt, restatedRebuilt, status: 'mismatch', cause };
 }
 
-export const auditFrames = (frames: SaveFile[]): FrameAudit[] => frames.map(auditFrame);
+// 包内定位：按时间升序找最早不平的那一帧（规格 §4.4；帧自带逐季快照，这是唯一可靠的季度坐标）
+export const auditFrames = (frames: SaveFile[]): FrameAudit[] =>
+  [...frames].sort((a, b) => a.timestamp - b.timestamp).map(auditFrame);
+
+export const firstDivergingFrame = (results: FrameAudit[]): FrameAudit | null =>
+  results.find((r) => r.status === 'mismatch') ?? null;
 
 export const auditSummary = (results: FrameAudit[]) => ({
   total: results.length,
@@ -477,12 +470,19 @@ export const auditSummary = (results: FrameAudit[]) => ({
   mismatch: results.filter((r) => r.status === 'mismatch').length,
   noAnchor: results.filter((r) => r.status === 'no-anchor').length,
 });
+
+// S-T7 预览与 S-T8 报告共用同一份措辞，避免两处各写一遍
+export const CAUSE_TEXT: Record<AuditCause, string> = {
+  'flow-log': '流水条目与现金不符',
+  'restated-log': '季度重述串与现金不符',
+  both: '帧末现金或期初条目被改',
+};
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run tests/audit.test.ts`
-Expected: 6 例全过。两处需要重点核对：① "真跑 5 个季后未篡改"一例必须是 `ok`——若它是 `mismatch`，说明 Task 1 的 `kind` 分类或回填还有漏，回到 Task 1 修，**不得**在这里放过；② 篡改第 3 季一例必须落进 `quarterMismatch` 而不是 `cashMismatch`，否则说明季内比较被种子污染。
+Expected: 7 例全过（本任务自己的 describe 5 例 + 包内定位 2 例）。三处需要重点核对：① "真跑 5 季未篡改"一例必须是 `ok`——若它是 `mismatch`，说明 S-T1 的 `kind` 分类或回填有漏，回到 S-T1 修，**不得**在此放过；② 篡改一季流水那例必须 `cause === 'flow-log'`（重述线仍吻合），若报成 `both` 说明 B 侧重建算错了种子；③ 只改 summary 那例必须 `cause === 'restated-log'`。
 
 若报 `EnterpriseState` 未使用（TS 严格模式下的无用导入），删掉该导入即可，不要保留空导入。
 
@@ -998,7 +998,7 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
       const frames = pkg.saves.length > 0 ? pkg.saves : [{ id: 'current', name: '当前进度', enterpriseName: '企业1', timestamp: Date.now(), resetCount: 0, version: pkg.app.saveVersion, state: pkg.current, createdAt: pkg.exportedAt }];
       const results = auditFrames(frames);
       const mismatches = results.filter(r => r.status !== 'ok')
-        .map(r => r.status === 'no-anchor' ? `${r.saveName}：起算链不完整` : `${r.saveName}：第${r.year}年第${r.quarter}季账实不符，流水推算 ${r.expectedCash}M，快照 ${r.actualCash}M`);
+        .map(r => r.status === 'no-anchor' ? `${r.saveName}：起算链不完整` : `${r.saveName}：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），本帧现金 ${r.actualCash}M`);
       const digestMismatch: string[] = [];
       for (const save of frames) {
         const declared = pkg.digests.frames[save.id];
@@ -1095,7 +1095,7 @@ export function buildAuditReport(
     '',
     ...results.map((r) => r.status === 'ok'
       ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${r.actualCash}M）`
-      : `[${r.status === 'no-anchor' ? '起算链不完整' : '账实不符'}] ${r.saveName}（第${r.year}年第${r.quarter}季，流水推算 ${r.expectedCash}M，快照 ${r.actualCash}M）`),
+      : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] ${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${r.flowRebuilt}M，按重述串重建 ${r.restatedRebuilt}M，帧内现金 ${r.actualCash}M）`),
   ];
   return {
     text: lines.join('\n'),
