@@ -11,6 +11,8 @@ const mkLog = (over: Partial<FinancialLogRecord>): FinancialLogRecord => ({
   cashChange: 0,
   newCash: 0,
   operator: '测试',
+  // 默认按流水记账，测试可用 { kind: 'summary' } 覆盖（Task 2 的过滤用例依赖此覆盖）
+  kind: 'flow',
   ...over,
 });
 

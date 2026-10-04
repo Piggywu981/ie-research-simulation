@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger } from '../types/enterprise';
+import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger, SAVE_FORMAT_VERSION } from '../types/enterprise';
 import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE, RENT_BY_TYPE, annualRent } from '../utils/rules';
 import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS, generateYearOrders } from '../config/marketDemand';
 
@@ -187,6 +187,7 @@ const initialState: EnterpriseState = {
         cashChange: 20,
         newCash: 20,
         operator: '系统初始化',
+        kind: 'flow',
       },
     ],
     annualPlan: {
@@ -248,6 +249,14 @@ const migrateState = (s: EnterpriseState): EnterpriseState => {
       if (typeof line.netValue !== 'number') line.netValue = line.purchasePrice;
       if (typeof line.builtInYear !== 'number') line.builtInYear = 0;
     });
+  });
+
+  // 财务日志 flow/summary（v4）：旧档无 kind，按产生位置特征兜底推断
+  // （唯一 summary 是季度末重述串：不带 stepId 且描述含「季度结束现金变动」；其余一律 flow）
+  state.operation.financialLogs.forEach(l => {
+    if (!l.kind) {
+      l.kind = (!l.stepId && (l.description || '').includes('季度结束现金变动')) ? 'summary' : 'flow';
+    }
   });
 
   // 厂房权属（v3）：旧档按槽位补齐——大厂房自有、小厂房租赁，租赁快照与权属一致
@@ -372,7 +381,7 @@ export const useEnterpriseStore = create<{
       enterpriseName: '企业1',
       timestamp,
       resetCount,
-      version: 3,
+      version: SAVE_FORMAT_VERSION,
       state: JSON.parse(JSON.stringify(state)),
       createdAt: formattedDate,
     };
@@ -402,7 +411,7 @@ export const useEnterpriseStore = create<{
       enterpriseName: '企业1',
       timestamp,
       resetCount,
-      version: 3,
+      version: SAVE_FORMAT_VERSION,
       state: JSON.parse(JSON.stringify(state)),
       createdAt: formattedDate,
     };
@@ -428,9 +437,9 @@ export const useEnterpriseStore = create<{
       resetCount: saveFile.resetCount
     });
     // 添加操作日志
-    get().addOperationLog('加载存档', saveFile.version === 3
+    get().addOperationLog('加载存档', saveFile.version >= SAVE_FORMAT_VERSION
       ? `加载存档：${saveFile.name}`
-      : `加载存档：${saveFile.name}（旧版存档已迁移至v3，建议重置开新局）`);
+      : `加载存档：${saveFile.name}（旧版存档已迁移至v4，建议重置开新局）`);
   },
 
   // 重置游戏
@@ -447,37 +456,7 @@ export const useEnterpriseStore = create<{
   },
 
   // 财务操作
-  
-  // 添加财务日志
-  addFinancialLog: (description: string, cashChange: number, newCash: number) =>
-    set((state) => {
-      const financialLog: FinancialLogRecord = {
-        id: `finlog-${Date.now()}`,
-        year: state.state.operation.currentYear,
-        quarter: state.state.operation.currentQuarter,
-        timestamp: Date.now(),
-        description,
-        cashChange,
-        newCash,
-        operator: '企业1管理者',
-      };
-      
-      return {
-        state: {
-          ...state.state,
-          operation: {
-            ...state.state.operation,
-            financialLogs: [financialLog, ...state.state.operation.financialLogs],
-          },
-        },
-      };
-    }),
 
-
-
-
-
-  
   // 申请长期贷款（年末第4季度，每次20M，未还本余额上限40M，3年期年息10%）
   applyLongTermLoan: () =>
     set((state) => {
@@ -515,6 +494,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'e-1',
+        kind: 'flow',
       };
 
       return {
@@ -575,6 +555,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'q-3',
+        kind: 'flow',
       };
 
       return {
@@ -631,6 +612,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'q-11',
+        kind: 'flow',
       };
 
       return {
@@ -680,6 +662,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'b-4',
+        kind: 'flow',
       };
 
       return {
@@ -772,6 +755,7 @@ export const useEnterpriseStore = create<{
                 newCash,
                 operator: '企业1管理者',
                 stepId: 'q-15',
+                kind: 'flow',
               },
               ...state.state.operation.financialLogs
             ],
@@ -909,6 +893,19 @@ export const useEnterpriseStore = create<{
       const purchaseCost = -firstPayment;
       const newCash = state.state.finance.cash + purchaseCost;
 
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `-${firstPayment}M(${config.name}投资首期${newLine.installationPeriod > 0 ? `，共${installmentCount}期` : '，一次性付清'})`,
+        cashChange: purchaseCost,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'q-8',
+        kind: 'flow',
+      };
+
       const updatedState = {
         ...state.state,
         production: {
@@ -921,20 +918,7 @@ export const useEnterpriseStore = create<{
         },
         operation: {
           ...state.state.operation,
-          financialLogs: [
-            {
-              id: `finlog-${Date.now()}`,
-              year: state.state.operation.currentYear,
-              quarter: state.state.operation.currentQuarter,
-              timestamp: Date.now(),
-              description: `-${firstPayment}M(${config.name}投资首期${newLine.installationPeriod > 0 ? `，共${installmentCount}期` : '，一次性付清'})`,
-              cashChange: purchaseCost,
-              newCash,
-              operator: '企业1管理者',
-              stepId: 'q-8',
-            },
-            ...state.state.operation.financialLogs
-          ],
+          financialLogs: [financialLog, ...state.state.operation.financialLogs],
         },
       };
 
@@ -985,6 +969,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'e-3',
+        kind: 'flow',
       };
       return {
         validationError: null,
@@ -1029,6 +1014,7 @@ export const useEnterpriseStore = create<{
         newCash: state.state.finance.cash,
         operator: '企业1管理者',
         stepId: 'e-3',
+        kind: 'flow',
       };
       return {
         validationError: null,
@@ -1078,6 +1064,7 @@ export const useEnterpriseStore = create<{
         newCash: finance.cash,
         operator: '企业1管理者',
         stepId: 'q-12',
+        kind: 'flow',
       };
       return {
         validationError: null,
@@ -1207,6 +1194,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'q-10',
+        kind: 'flow',
       };
 
       const operationLog = {
@@ -1300,6 +1288,7 @@ export const useEnterpriseStore = create<{
         newCash: updatedState.finance.cash,
         operator: '企业1管理者',
         stepId: 'q-8',
+        kind: 'flow',
       };
 
       updatedState.operation.financialLogs = [financialLog, ...updatedState.operation.financialLogs];
@@ -1362,6 +1351,19 @@ export const useEnterpriseStore = create<{
       const saleLoss = Math.max(0, netValue - salvageValue);
       const newCash = state.state.finance.cash + salvageIncome;
 
+      const financialLog: FinancialLogRecord = {
+        id: `finlog-${Date.now()}`,
+        year: state.state.operation.currentYear,
+        quarter: state.state.operation.currentQuarter,
+        timestamp: Date.now(),
+        description: `+${salvageIncome}M(出售${line.name}${saleLoss > 0 ? `，净值差额-${saleLoss}M计入综合费用` : ''})`,
+        cashChange: salvageIncome,
+        newCash,
+        operator: '企业1管理者',
+        stepId: 'q-8',
+        kind: 'flow',
+      };
+
       const updatedState = {
         ...state.state,
         production: {
@@ -1374,20 +1376,7 @@ export const useEnterpriseStore = create<{
         },
         operation: {
           ...state.state.operation,
-          financialLogs: [
-            {
-              id: `finlog-${Date.now()}`,
-              year: state.state.operation.currentYear,
-              quarter: state.state.operation.currentQuarter,
-              timestamp: Date.now(),
-              description: `+${salvageIncome}M(出售${line.name}${saleLoss > 0 ? `，净值差额-${saleLoss}M计入综合费用` : ''})`,
-              cashChange: salvageIncome,
-              newCash,
-              operator: '企业1管理者',
-              stepId: 'q-8',
-            },
-            ...state.state.operation.financialLogs
-          ],
+          financialLogs: [financialLog, ...state.state.operation.financialLogs],
           annualLedger: {
             ...state.state.operation.annualLedger,
             extraExpense: state.state.operation.annualLedger.extraExpense + saleLoss,
@@ -1460,6 +1449,7 @@ export const useEnterpriseStore = create<{
         newCash: state.state.finance.cash,
         operator: '企业1管理者',
         stepId: 'q-6',
+        kind: 'flow',
       };
 
       return {
@@ -1512,6 +1502,7 @@ export const useEnterpriseStore = create<{
         newCash: state.state.finance.cash,
         operator: '企业1管理者',
         stepId: 'q-6',
+        kind: 'flow',
       };
 
       return {
@@ -1571,6 +1562,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'q-17',
+        kind: 'flow',
       };
 
       // 添加操作日志
@@ -1665,6 +1657,7 @@ export const useEnterpriseStore = create<{
         newCash: state.state.finance.cash,
         operator: '企业1管理者',
         stepId: 'b-2',
+        kind: 'flow',
       };
 
       return {
@@ -1734,6 +1727,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'e-5',
+        kind: 'flow',
       };
       const operationLog = {
         id: `log-${Date.now()}`,
@@ -1811,6 +1805,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'e-5',
+        kind: 'flow',
       };
       const operationLog = {
         id: `log-${Date.now()}`,
@@ -1973,6 +1968,7 @@ export const useEnterpriseStore = create<{
         newCash: state.state.finance.cash,
         operator: '企业1管理者',
         stepId: 'q-14',
+        kind: 'flow',
       };
 
       return {
@@ -2027,6 +2023,7 @@ export const useEnterpriseStore = create<{
         newCash,
         operator: '企业1管理者',
         stepId: 'q-17',
+        kind: 'flow',
       };
       const annualLedger: AnnualLedger = amount < 0
         ? { ...state.state.operation.annualLedger, otherFee: state.state.operation.annualLedger.otherFee + (-amount) }
@@ -2078,6 +2075,7 @@ export const useEnterpriseStore = create<{
         newCash: initialCash - shortSettlement.due,
         operator: '系统自动',
         stepId: 'q-2',
+        kind: 'flow',
       };
 
       // 应收账款滚动
@@ -2108,6 +2106,7 @@ export const useEnterpriseStore = create<{
         newCash: initialCash - shortSettlement.due - apPayment,
         operator: '系统自动',
         stepId: 'q-4',
+        kind: 'flow',
       };
       // 本季度研发投资额（研发处理位于生产段之后，此处提前声明）
       let rdInvestment = 0;
@@ -2123,6 +2122,7 @@ export const useEnterpriseStore = create<{
         newCash: initialCash - shortSettlement.due - apPayment + cashIncrease,
         operator: '系统自动',
         stepId: 'q-11',
+        kind: 'flow',
       };
 
       // 6. 处理原材料订单到货（绝对季度索引匹配；入库时付款，现金不足计入应付款）
@@ -2165,6 +2165,7 @@ export const useEnterpriseStore = create<{
         newCash: initialCash - shortSettlement.due - apPayment + cashIncrease - materialPayment,
         operator: '系统自动',
         stepId: 'q-5',
+        kind: 'flow',
       };
       
       // 生成季初现金盘点日志（原料取到货后库存，成品用季初库存）
@@ -2179,6 +2180,7 @@ export const useEnterpriseStore = create<{
         newCash: quarterStartCash,
         operator: '系统自动',
         stepId: 'q-1',
+        kind: 'flow',
       };
       
       // 7. 处理生产线状态变化（安装、转产、生产）
@@ -2227,6 +2229,7 @@ export const useEnterpriseStore = create<{
           newCash: 0,
           operator: source === 'auto' ? '系统自动' : '系统自动',
           stepId: 'q-10',
+          kind: 'flow',
         });
         return true;
       };
@@ -2273,6 +2276,7 @@ export const useEnterpriseStore = create<{
               newCash: 0,
               operator: '系统自动',
               stepId: 'q-8',
+              kind: 'flow',
             });
             const newInstallationProgress = line.installationProgress + 1;
             if (newInstallationProgress >= line.installationPeriod) {
@@ -2391,6 +2395,7 @@ export const useEnterpriseStore = create<{
         newCash: initialCash - shortSettlement.due - apPayment + cashIncrease - rdInvestment - autoProcessFees,
         operator: '系统自动',
         stepId: 'q-7',
+        kind: 'flow',
       };
 
       // 5. 产品研发进度（仅 P2：6Q 分期、每季 1M、资金短缺自动中断，置于生产之后以核算可用资金）
@@ -2441,6 +2446,7 @@ export const useEnterpriseStore = create<{
         newCash: initialCash - shortSettlement.due - apPayment + cashIncrease - rdInvestment,
         operator: '系统自动',
         stepId: 'q-15',
+        kind: 'flow',
       } : null;
       
       // 9. 生成原材料耗尽导致停产的事件记录
@@ -2488,6 +2494,7 @@ export const useEnterpriseStore = create<{
             newCash: 0, // 稍后统一回填
             operator: '系统自动',
             stepId: 'e-1',
+            kind: 'flow',
           });
         }
       }
@@ -2511,6 +2518,7 @@ export const useEnterpriseStore = create<{
             newCash: 0,
             operator: '系统自动',
             stepId: 'e-2',
+            kind: 'flow',
           });
         }
       }
@@ -2529,6 +2537,7 @@ export const useEnterpriseStore = create<{
           newCash: 0,
           operator: '系统自动',
           stepId: 'e-3',
+          kind: 'flow',
         });
       }
 
@@ -2545,6 +2554,7 @@ export const useEnterpriseStore = create<{
           newCash: 0,
           operator: '系统自动',
           stepId: 'q-16',
+          kind: 'flow',
         });
       }
 
@@ -2574,6 +2584,7 @@ export const useEnterpriseStore = create<{
             newCash: 0,
             operator: '系统自动',
             stepId: 'e-4',
+            kind: 'flow',
           });
         }
       }
@@ -2615,6 +2626,7 @@ export const useEnterpriseStore = create<{
           newCash: 0,
           operator: '系统自动',
           stepId: 'e-6',
+          kind: 'flow',
         });
       } else {
         ledger = {
@@ -2637,13 +2649,53 @@ export const useEnterpriseStore = create<{
       const finalCash = newCash;
       const finalCashChange = cashChange;
 
-      // 回填年末各项日志的现金余额（按发生顺序；基数含季初短贷/应付归还与原料、安装、加工、研发等前置支出）
-      {
-        let running = initialCash - shortSettlement.due - apPayment + cashIncrease - materialPayment - totalInstallPayments - autoProcessFees - rdInvestment;
-        yearEndLogs.forEach(log => {
-          running += log.cashChange;
-          log.newCash = running;
+      // 年末市场/ISO 年度结算：未维持的已准入市场丧失资格（第1年豁免），并复位本年度投资标记
+      // 警告日志必须在此构造并入列，才能与其余 e-5 日志一起被下方统一回填补上 newCash
+      let abandonedMarkets: string[] = [];
+      const updatedMarkets = state.state.marketing.markets.map(market => {
+        if (isYearEnd) {
+          if (market.status === 'available' && !market.investedThisYear && closingYear >= 2) {
+            abandonedMarkets.push(market.name);
+            return { ...market, status: 'unavailable' as const, investedThisYear: false };
+          }
+          return { ...market, investedThisYear: false };
+        }
+        return market;
+      });
+      if (abandonedMarkets.length > 0) {
+        newOperationLogs.unshift({
+          id: `log-${Date.now()}-abandon`,
+          time: new Date().toLocaleString(),
+          operator: '系统自动',
+          action: '市场丧失准入',
+          dataChange: `${abandonedMarkets.join('、')}因本年度未投入1M维护，丧失市场准入`,
         });
+        yearEndLogs.push({
+          id: `finlog-${Date.now()}-abandon`,
+          year: newYear,
+          quarter: newQuarter,
+          timestamp: Date.now(),
+          description: `市场维护警告：${abandonedMarkets.join('、')}未维持，丧失准入`,
+          cashChange: 0,
+          newCash: 0,
+          operator: '系统自动',
+          stepId: 'e-5',
+          kind: 'flow',
+        });
+      }
+
+      // 统一回填：先走季中日志（安装分期、自动开工），再走年末结算日志。
+      // install/start 的 cashChange 合计恰为 -totalInstallPayments - autoProcessFees，
+      // 故累计到它们之后再减 rdInvestment，与原初值等价。
+      let runningCash = initialCash - shortSettlement.due - apPayment + cashIncrease - materialPayment;
+      for (const log of [...installPaymentLogs, ...startProductionLogs]) {
+        runningCash += log.cashChange;
+        log.newCash = runningCash;
+      }
+      runningCash -= rdInvestment;
+      for (const log of yearEndLogs) {
+        runningCash += log.cashChange;
+        log.newCash = runningCash;
       }
 
       // 添加现金流量历史记录
@@ -2697,44 +2749,12 @@ export const useEnterpriseStore = create<{
         cashChange: finalCashChange,
         newCash: finalCash,
         operator: '系统自动',
+        kind: 'summary',
       };
 
       // 年度结束日志记录（结账日志已在上方年末序列生成）
       let yearEndLog: FinancialLogRecord | null = null;
       
-      // 年末市场/ISO 年度结算：未维持的已准入市场丧失资格（第1年豁免），并复位本年度投资标记
-      let abandonedMarkets: string[] = [];
-      const updatedMarkets = state.state.marketing.markets.map(market => {
-        if (isYearEnd) {
-          if (market.status === 'available' && !market.investedThisYear && closingYear >= 2) {
-            abandonedMarkets.push(market.name);
-            return { ...market, status: 'unavailable' as const, investedThisYear: false };
-          }
-          return { ...market, investedThisYear: false };
-        }
-        return market;
-      });
-      if (abandonedMarkets.length > 0) {
-        newOperationLogs.unshift({
-          id: `log-${Date.now()}-abandon`,
-          time: new Date().toLocaleString(),
-          operator: '系统自动',
-          action: '市场丧失准入',
-          dataChange: `${abandonedMarkets.join('、')}因本年度未投入1M维护，丧失市场准入`,
-        });
-        yearEndLogs.push({
-          id: `finlog-${Date.now()}-abandon`,
-          year: newYear,
-          quarter: newQuarter,
-          timestamp: Date.now(),
-          description: `市场维护警告：${abandonedMarkets.join('、')}未维持，丧失准入`,
-          cashChange: 0,
-          newCash: 0,
-          operator: '系统自动',
-          stepId: 'e-5',
-        });
-      }
-
       // ISO 认证：年度投资模型下无自动推进，仅复位本年度投资标记
       const updatedISOCertifications = state.state.marketing.isoCertifications.map(iso =>
         isYearEnd ? { ...iso, investedThisYear: false } : iso
@@ -2745,7 +2765,7 @@ export const useEnterpriseStore = create<{
       const allLogs = [shortSettlementLog, apLog, quarterStartLog, arLog, materialArrivalLog, ...installPaymentLogs, ...startProductionLogs, productionLog, quarterEndLog, ...remappedYearEndLogs];
       // 只有当有研发投资时才添加研发投资日志
       if (rdLog) {
-        allLogs.splice(6, 0, rdLog); // 插入到开工日志之后
+        allLogs.splice(6, 0, rdLog); // 下标6＝5条固定日志（短贷/应付/季初/应收/到货）+ 首条安装分期日志之后；无安装日志时即首条开工日志之后
       }
       if (yearEndLog) {
         allLogs.push(yearEndLog);

@@ -234,6 +234,12 @@ export interface MarketingData {
   selectedOrders: Order[];
 }
 
+// flow = 记录一次真实现金增减；summary = 整季净额重述，不得参与现金重演算（规格 §4.1）
+export type LogKind = 'flow' | 'summary';
+
+// 存档格式版本单点定义：store 的两处写入、迁移判断、包结构都必须引用它，避免再出现 §5.7 那类漂移
+export const SAVE_FORMAT_VERSION = 4;
+
 // 财务日志记录类型
 export interface FinancialLogRecord {
   id: string;
@@ -245,6 +251,7 @@ export interface FinancialLogRecord {
   newCash: number;
   operator: string;
   stepId?: string; // 运行控制表步骤标记：'b-1'..'b-4'（年初）| 'q-1'..'q-20'（季度）| 'e-1'..'e-6'（年末）
+  kind: LogKind;
 }
 
 // 现金流量记录类型
@@ -295,7 +302,7 @@ export interface SaveFile {
   enterpriseName: string;
   timestamp: number;
   resetCount: number;
-  version: number; // 存档格式版本：1=旧版，2=贷款台账/年度台账/绝对季度索引，3=厂房权属与租赁快照
+  version: number; // 存档格式版本：3=厂房权属/租赁快照，4=财务日志 flow/summary 分类
   state: EnterpriseState;
   createdAt: string;
 }
