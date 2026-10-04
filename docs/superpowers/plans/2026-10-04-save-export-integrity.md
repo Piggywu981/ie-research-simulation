@@ -691,7 +691,7 @@ Expected: FAIL —— 模块不存在。
 
 - [ ] **Step 3: 类型**
 
-`src/types/enterprise.ts` 末尾追加：
+`src/types/enterprise.ts` 末尾追加（**落地实况**：接在 `SaveFile` 之后而不是文件末尾——`SavePackage` 的两个字段直接是 `EnterpriseState` 与 `SaveFile[]`，读它的人该能在同一屏里看到它们的定义）：
 
 ```ts
 // 存档包（规格 §4.2）：一帧当前状态 + 全部历史快照 + 指纹
@@ -738,6 +738,15 @@ export async function buildSavePackage(state: EnterpriseState, saves: SaveFile[]
 
 export const serializePackage = (pkg: SavePackage): string => JSON.stringify(pkg, null, 2);
 ```
+
+**落地实况（S-T5 已按此实现，S-T6/S-T7/S-T8 照此消费；片段本身有四处不成立，已按实况更正）**
+
+1. `SAVE_FORMAT_VERSION` 是**值**不是类型，Step 4 片段只 `import type { … } from '../types/enterprise'` 取不到它，`tsc --noEmit` 直接红；实现里另起一条普通 import。Step 1 夹具的 `version: 4` 同样改为引用该常量（前言 #3 要求全仓不出现字面量 4）。片段也没有 `return` 与 `serializePackage` 两行，照抄不能编译。
+2. **`current`/`saves` 深拷贝而非按引用留活对象**：`buildSavePackage` 是异步的（逐帧哈希要 await），若按引用，建包之后任何一次 store 变更都会让"写进文件的字节"与包内声明的指纹脱节，导入侧据此报出的「指纹不符」是假篡改警报。代价是一次 JSON 往返（`snapshot` 沿用 `saveGame` 的 `JSON.parse(JSON.stringify(…))` 写法）。**因此 Step 1 的 `expect(pkg.current).toBe(state)` 不成立，改为 `toEqual(state)`**，并有一例专门钉住"建完再改入参不动已导出字节"。
+3. **导出侧拒重复 id**：`frames[save.id] = …` 会让两份同 id 的帧在指纹表里静默塌成一条，"帧数"与"指纹数"就对不上，而这份文件是拿给别人当证据的。S-T6 在导入侧也拒重复 id，但那救不了已经导出的文件，所以导出侧先抛错（消息点名是哪几个 id），按钮的失败路径把它写进 `validationError`。副产品：**导出成功的包里恒有 `Object.keys(digests.frames).length === saves.length`**，S-T7 的预览可以直接依赖这条不变量。
+4. 失败路径给用户的串取 `error.message` 而不是片段里的 `error.name`：普通 `Error` 的 `name` 恒为 `'Error'`，把第 3 条那句中文说明整个吞掉，用户只看到「导出失败：Error」。
+5. 下载片段照 `OperationCenter.tsx:625-633` 的既有写法补齐 `document.body.appendChild(a)` → `click()` → `removeChild(a)`（片段少了前后两行）：本仓库两处既有导出都是"先挂进 DOM 再点"，跨浏览器兼容性正是这个写法的由来，且必须复用同一套而不是另起第二个 helper。按钮位置是「手动存档 / **导出存档包** / 重置游戏」——破坏性的重置仍留最右。
+6. 指纹值**任何用例都不钉死**：非安全上下文下 `digestFrame`/`digestText` 给的是 `unavailable:*`（S-T4 的降级），只钉形状 `/^(sha256:[0-9a-f]{16}|unavailable:.+)$/` 与三条一致性——`digests.frames[id] === await digestFrame(pkg.saves[i])`、经 `JSON.parse(serializePackage(pkg))` 往返后重算仍等于声明值、`digests` 从字节里去掉后重算整包指纹等于声明值。逐帧指纹另有一例"只改五个内容字段之一，指纹必须变；只改展示字段必须不变"——片段那种"五帧之间互不相同"的写法抓不到它（`id` 本身在指纹里，任两帧天然不同）。
 
 - [ ] **Step 5: 导出按钮**
 
