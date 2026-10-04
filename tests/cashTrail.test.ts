@@ -1,10 +1,23 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
+import { calculateQuarterTotal } from '../src/components/OperationCenter';
 import type { FinancialLogRecord } from '../src/types/enterprise';
 
 const store = () => useEnterpriseStore.getState();
 const flowSum = (logs: FinancialLogRecord[]) =>
   logs.filter(l => l.kind === 'flow').reduce((t, l) => t + l.cashChange, 0);
+const mkLog = (over: Partial<FinancialLogRecord>): FinancialLogRecord => ({
+  id: `log-${Math.random()}`,
+  year: 1,
+  quarter: 1,
+  timestamp: Math.random(),
+  description: '',
+  cashChange: 0,
+  newCash: 0,
+  operator: '测试',
+  kind: 'flow',
+  ...over,
+});
 
 beforeEach(() => {
   useEnterpriseStore.setState({ state: createFreshState(), validationError: null });
@@ -70,5 +83,44 @@ describe('现金流水账不变量', () => {
     expect(flowSum(logs)).toBe(s.finance.cash);
     expect(logs.filter(l => l.kind === 'summary')).toHaveLength(5);
     expect(logs.filter(l => l.kind === 'flow' && l.cashChange !== 0 && l.newCash === 0)).toEqual([]);
+  });
+});
+
+// 页面侧消费方（运行控制中心「入库（收入）数量合计」/「出库（现金支出）合计」两格）此前对整季
+// 全部日志求和，等于把 summary 重述的整季净额再加一遍；判据与 CSV 导出器同源：只加 flow（规格 §4.1、§7 验收 3）。
+describe('页面季度合计只加 flow', () => {
+  it('合成日志：summary 重述整季净额，也不改变页面的收入/支出合计', () => {
+    const flows = [
+      mkLog({ stepId: 'q-11', description: '收现', cashChange: 5, newCash: 45 }),
+      mkLog({ stepId: 'q-16', description: '行政', cashChange: -1, newCash: 44 }),
+    ];
+    const summary = mkLog({
+      description: '第1年第1季度结束现金变动: 应收账款收现 5M - 行政管理费 1M',
+      cashChange: 4,
+      newCash: 44,
+      operator: '系统自动',
+      kind: 'summary',
+    });
+
+    expect(calculateQuarterTotal(flows, 1, 1, true)).toBe(5);
+    expect(calculateQuarterTotal(flows, 1, 1, false)).toBe(-1);
+    expect(calculateQuarterTotal([...flows, summary], 1, 1, true)).toBe(5);
+    expect(calculateQuarterTotal([...flows, summary], 1, 1, false)).toBe(-1);
+  });
+
+  it('真实 4 季推进：逐季去掉 summary 后页面合计不变', () => {
+    for (let i = 0; i < 4; i++) store().nextQuarter();
+    const logs = store().state.operation.financialLogs;
+    const summaries = logs.filter(l => l.kind === 'summary');
+    expect(summaries).toHaveLength(4);
+    const flowOnly = logs.filter(l => l.kind === 'flow');
+
+    for (const s of summaries) {
+      // 有非零净额的季度（进入第4季度扣行政费）才会真正区分两种算法，故逐季比对
+      expect(calculateQuarterTotal(logs, s.year, s.quarter, true))
+        .toBe(calculateQuarterTotal(flowOnly, s.year, s.quarter, true));
+      expect(calculateQuarterTotal(logs, s.year, s.quarter, false))
+        .toBe(calculateQuarterTotal(flowOnly, s.year, s.quarter, false));
+    }
   });
 });

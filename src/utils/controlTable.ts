@@ -61,7 +61,7 @@ const quarterStartSnapshot = (saves: SaveFile[], year: number, quarter: number):
  * - 季度行：该年该季该步骤有事件则填日志描述串（现金与非现金事件同一条规则），无事件填 —
  * - q-1 盘点：优先用存档快照 (现金,原料,成品)；无快照时用盘点日志
  * - q-20 结余：该季结束后现金（下一季度快照现金或本季日志 newCash）
- * - q-18/q-19：本季日志现金收/支合计
+ * - q-18/q-19：本季 flow 日志现金收/支合计（summary 重述不计入）
  * - 年初/年末行：数据填在季度1列
  */
 export function buildYearControlTable(
@@ -112,16 +112,18 @@ export function buildYearControlTable(
         }
         case 'q-18': {
           // 本季全部现金收入合计（跨步骤汇总）
+          // 规格 §4.1：现金合计只取 flow，summary 是整季净额重述，计入即重复
           const income = yearLogs
-            .filter((l) => l.quarter === q && l.cashChange > 0)
+            .filter((l) => l.quarter === q && l.kind === 'flow' && l.cashChange > 0)
             .reduce((s, l) => s + l.cashChange, 0);
           row[2 + q - 1] = income > 0 ? `${income}M` : '';
           break;
         }
         case 'q-19': {
           // 本季全部现金支出合计（跨步骤汇总）
+          // 规格 §4.1：同上，summary（季度结束现金变动）只重述同季 flow，不参与合计
           const expense = yearLogs
-            .filter((l) => l.quarter === q && l.cashChange < 0)
+            .filter((l) => l.quarter === q && l.kind === 'flow' && l.cashChange < 0)
             .reduce((s, l) => s - l.cashChange, 0);
           row[2 + q - 1] = expense > 0 ? `-${expense}M` : '';
           break;

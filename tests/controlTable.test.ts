@@ -104,6 +104,23 @@ describe('单元格填充', () => {
     expect(table.find(r => r[1].includes('出库（现金支出）'))![2]).toBe('-3M');
   });
 
+  it('q-18/q-19 只统计 flow：加入一条 summary 后单元格数值不变', () => {
+    const without = rows(1, [
+      mkLog({ quarter: 1, stepId: 'q-11', description: '收现', cashChange: 5 }),
+      mkLog({ quarter: 1, stepId: 'q-16', description: '行政', cashChange: -1 }),
+    ], []);
+    const withSummary = rows(1, [
+      mkLog({ quarter: 1, stepId: 'q-11', description: '收现', cashChange: 5 }),
+      mkLog({ quarter: 1, stepId: 'q-16', description: '行政', cashChange: -1 }),
+      mkLog({ quarter: 1, description: '第1年第1季度结束现金变动: 结余4M', cashChange: 4, kind: 'summary' }),
+    ], []);
+    const cell = (t: string[][], name: string) => t.find(r => r[1] === name)![2];
+    expect(cell(withSummary, '入库（收入）数量合计')).toBe(cell(without, '入库（收入）数量合计'));
+    expect(cell(withSummary, '出库（现金支出）合计')).toBe(cell(without, '出库（现金支出）合计'));
+    expect(cell(without, '入库（收入）数量合计')).toBe('5M');
+    expect(cell(without, '出库（现金支出）合计')).toBe('-1M');
+  });
+
   it('q-20 结余取下一季度快照现金', () => {
     const saves = [mkSave(1, 2, 33, 0, 0)];
     const table = rows(1, [], saves);

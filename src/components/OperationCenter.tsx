@@ -199,21 +199,17 @@ const getQuarterStartInventory = (
         .join(', ')
     };
   } else {
-    // 从日志中获取数据
-    const quarterStartLog = financialLogs.find(log => {
-      return log.year === year && log.quarter === quarter && log.description.includes('季初现金盘点');
-    });
-
+    // 从日志/现金流历史获取数据。
+    // 此处原有一条按描述文本 `季初现金盘点` 匹配 q-1 盘点日志的死分支（规格 §4.1 记录），
+    // q-1 的真实描述是 `(现金M，原料，成品)` 括号串，永不命中，已删除。
+    // 也不改为读那条日志的 newCash：它是 initialCash + 应收收现，不扣短贷本息与应付归还，
+    // 显示出来是错数；季初现金仍以 cashFlowHistory（按季记账的实际余额）为准。
     let cash = '-';
-    if (quarterStartLog) {
-      cash = `${quarterStartLog.newCash}M`;
-    } else {
-      const cashFlow = cashFlowHistory.find(record => {
-        return record.year === year && record.quarter === quarter;
-      });
-      if (cashFlow) {
-        cash = `${cashFlow.cash}M`;
-      }
+    const cashFlow = cashFlowHistory.find(record => {
+      return record.year === year && record.quarter === quarter;
+    });
+    if (cashFlow) {
+      cash = `${cashFlow.cash}M`;
     }
 
     // 查找最近的库存数据
@@ -393,23 +389,16 @@ const getOtherCashFlowDatum = (
   year: number,
   quarter: number
 ): string => {
-  // 查找该季度的所有财务日志
-  const allQuarterLogs = financialLogs.filter(log => {
-    return log.year === year && log.quarter === quarter;
-  });
-
-  // 过滤出其他现金收支（只保留广告投放）
-  const otherLogs = allQuarterLogs.filter(log => {
-    // 排除已在其他步骤处理的日志类型，只保留广告投放
+  // 排除依据是日志的 kind 字段（规格 §4.1），不再靠描述文本：
+  // 原来这一串 `!description.includes(...)` 负向关键词里，`季初现金盘点` 永不命中
+  // （q-1 的真实描述是 `(现金M，原料，成品)` 括号串），其余关键词又要与下面的「广告」
+  // 同时成立才可能生效——系统生成的日志里没有这种交集，真出现时（玩家在 q-17 自填文本）
+  // 该条目本就属于本行、排除它反而漏显。整段只会误导后人，故删；季度末重述行由 kind 排除。
+  const otherLogs = financialLogs.filter(log => {
     return (
-      !log.description.includes('季初现金盘点') &&
-      !log.description.includes('应收账款') &&
-      !log.description.includes('原材料入库') &&
-      !log.description.includes('下原料订单') &&
-      !log.description.includes('产品研发投资') &&
-      !log.description.includes('支付行政管理费') &&
-      !log.description.includes('季度结束现金变动') &&
-      !log.description.includes('年度结束') &&
+      log.year === year &&
+      log.quarter === quarter &&
+      log.kind === 'flow' &&
       log.description.includes('广告')
     );
   });
@@ -426,14 +415,16 @@ const getOtherCashFlowDatum = (
 };
 
 // 工具函数：计算季度收入或支出合计
-const calculateQuarterTotal = (
+// 导出仅为让「页面消费方只加 flow」这条判据可被单测钉住（与 CSV 导出器同源），页面行为不变。
+// 规格 §4.1：只加 flow——summary（季度结束现金变动）重述的是同季其它日志的净额，计入即重复一遍。
+export const calculateQuarterTotal = (
   financialLogs: FinancialLogRecord[],
   year: number,
   quarter: number,
   isIncome: boolean
 ): number => {
   return financialLogs
-    .filter(log => log.year === year && log.quarter === quarter)
+    .filter(log => log.year === year && log.quarter === quarter && log.kind === 'flow')
     .reduce((sum, log) => {
       const change = isIncome
         ? (log.cashChange > 0 ? log.cashChange : 0)
