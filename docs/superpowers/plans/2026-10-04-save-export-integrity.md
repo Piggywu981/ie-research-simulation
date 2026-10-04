@@ -301,7 +301,7 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 ```ts
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
-import { auditFrame, auditFrames } from '../src/utils/audit';
+import { auditFrame } from '../src/utils/audit';
 import { SAVE_FORMAT_VERSION, type SaveFile } from '../src/types/enterprise';
 
 const store = () => useEnterpriseStore.getState();
