@@ -1308,7 +1308,7 @@ export function buildAuditReport(
     // 两个指纹覆盖的字段不同，报告里必须说清（评审 Task 4 item 4）：逐帧指纹按规格只包
     // {id,timestamp,version,resetCount,state}，而包壳含整份 SaveFile（name/enterpriseName/createdAt 都在内）——
     // 只改存档名就会呈现"包指纹不符 + 逐帧全通过"，不写这行它读起来像篡改。
-    `指纹口径：包指纹覆盖整包（含存档名/企业名/createdAt）；逐帧指纹只覆盖 {id,timestamp,version,resetCount,state}，仅改名会动包指纹而不动逐帧指纹。`,
+    `指纹口径：包指纹覆盖整包字节（digests 自身除外；含存档名/企业名/createdAt）；逐帧指纹只覆盖 {id,timestamp,version,resetCount,state}，仅改名会动包指纹而不动逐帧指纹。`,
     `帧统计：共 ${summary.total}，通过 ${summary.ok}，不符 ${summary.mismatch}（其中旧档 version<4 的判定 ${summary.legacyMismatch} 条，其"不符"不等于篡改），起算链不完整 ${summary.noAnchor}`,
     `分歧起点：${diverging
       ? `${diverging.restatementCaliber !== 'v4' ? '（该帧 version<4，先排除历史版本缺日志再谈篡改）' : ''}${diverging.saveName}（第${diverging.year}年第${diverging.quarter}季）`
