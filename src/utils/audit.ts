@@ -24,19 +24,23 @@ export interface FrameAudit {
   cause: AuditCause | null;
   // 审计用哪一侧当证据，是**存档版本 + 迁移换算结果**的函数。S-T5/S-T7/S-T8 直接展示它，
   // 不要各自再去读 SaveFile.version 推一遍：一条规则写三处就是 §5.7 那类漂移的起点
-  // （SAVE_FORMAT_VERSION 单点定义的理由同款）。它只描述 B 侧读数的身份，不改变 status/cause 的判定。
+  // （SAVE_FORMAT_VERSION 单点定义的理由同款）。它只描述 B 侧读数的身份，不改变 status/cause 的判定；
+  // 逐值的对外措辞就是文件末尾那份 CALIBER_TEXT（同一张表，唯一的一份，消费方直接 import）。
   //   'v4'                 version >= 4：串**应当**按新口径产生（v3 旧档也在载入时被 migrateState 重建过），
   //                        A、B 双侧都参与判定 → restatedRebuilt 可以当证据用。
   //                        注意这一档只跟着存档的版本标签走，它分不清「按新口径产生」与「kind/口径修复落地
   //                        之前就写下、带着 v4 标签却是旧口径串」那一类（旧版 migrateState 不换算、之后又存了档）：
-  //                        文案要说「按 v4 口径判定」，不能说成「已核实串确为新口径」。
+  //                        所以 CALIBER_TEXT['v4'] 说的是**这一帧按 v4 口径判定**这个前提，不是「逐串核实过」。
   //   'legacy-converted'   version < 4 而整串已经是新口径（老档那些季度本就没有玩家手操，或这帧的 state
   //                        已经过换算）：restatedRebuilt 的读数可信，但判定仍只看 A——version 是存档时写死
   //                        的标签，不能靠内容反推去指控旧档（那正是评审 C1 的假阳性形态）。
   //   'legacy-unconverted' version < 4 且串是旧口径、或残缺到换不出（缺种子 / summary 无有限 newCash）：
-  //                        restatedRebuilt 只是展示读数，UI 必须附「旧口径链，不作金额结论」，
-  //                        不能把它印成篡改证据。日志没有 kind 的原始帧也走这条（分类见 restatement.ts 的 kindOfLog），
-  //                        但它照样跑 A 侧判定，不会被降级成「无从起算」。
+  //                        restatedRebuilt 只是展示读数（「不作金额结论」那句说的就是它），不能印成篡改证据。
+  //                        日志没有 kind 的原始帧也走这条（分类见 restatement.ts 的 kindOfLog），但它照样跑 A 侧
+  //                        判定、不会被降级成「无从起算」：于是**天然不平**的老档（v3 时代有过没写进流水的现金变动）
+  //                        印出来也是 CAUSE_TEXT['flow-log'] 那句「不符」，与 v4 帧上的篡改判定**逐字相同**。
+  //                        这层区分只能由文案给出：CALIBER_TEXT['legacy-unconverted'] 明说「不符」不等于篡改，
+  //                        条数由 auditSummary 的 legacyMismatch 单独给。消费方不要自己拼这句、更不要自己读 version。
   restatementCaliber: RestatementCaliber;
 }
 
@@ -128,6 +132,10 @@ export const auditSummary = (results: FrameAudit[]) => ({
   ok: results.filter((r) => r.status === 'ok').length,
   mismatch: results.filter((r) => r.status === 'mismatch').length,
   noAnchor: results.filter((r) => r.status === 'no-anchor').length,
+  // mismatch 里属于旧档（version < 4，即 restatementCaliber !== 'v4'）的那部分：老档的「不符」与
+  // 新档的「不符」是两件事（前者可能只是 v3 时代没落账的现金变动，后者才当篡改看），报告与面板要分开说，
+  // 所以这个数由审计给，不由消费方拿 version 现算。恒有 legacyMismatch ≤ mismatch（它是 mismatch 的子集）。
+  legacyMismatch: results.filter((r) => r.status === 'mismatch' && r.restatementCaliber !== 'v4').length,
 });
 
 // S-T7 预览与 S-T8 报告共用同一份措辞，避免两处各写一遍
@@ -135,4 +143,15 @@ export const CAUSE_TEXT: Record<AuditCause, string> = {
   'flow-log': '流水条目与现金不符',
   'restated-log': '季度重述串与现金不符',
   both: '帧末现金或期初条目被改',
+};
+
+// restatementCaliber 三值的文案，与 CAUSE_TEXT 并列、同样单点住在这里：S-T7 预览与 S-T8 报告**直接 import**，
+// 不得各自再建一份、更不得从 SaveFile.version 反推（口径与文案都只许住一处，理由见 FrameAudit.restatementCaliber）。
+// 后两条必须把「旧档的『不符』≠ 篡改」说出来（评审 round-3 new finding #1）：未迁移的 v3 帧照跑 A 侧判定，
+// 而 v3 时代本就可能有过没写进流水的现金变动，那种天然不平印出来与 v4 帧上的篡改判定**逐字同一句**
+// CAUSE_TEXT['flow-log']。只靠「旧口径链，不作金额结论」挡不住它——那句说的是 B 读数的身份，不是 A 判定的含义。
+export const CALIBER_TEXT: Record<RestatementCaliber, string> = {
+  'v4': '重述串为新口径，可作金额证据',
+  'legacy-converted': '旧档（version<4）：重述串已换算，判定只依据流水',
+  'legacy-unconverted': '旧档（version<4）：判定只依据流水；该版本可能存在未记账的现金变动，"不符"不等于篡改',
 };

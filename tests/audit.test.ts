@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
-import { auditFrame, auditFrames, auditSummary, CAUSE_TEXT, firstDivergingFrame, type FrameAudit } from '../src/utils/audit';
+import { auditFrame, auditFrames, auditSummary, CALIBER_TEXT, CAUSE_TEXT, firstDivergingFrame, type FrameAudit } from '../src/utils/audit';
 import { rebuildRestatedChain } from '../src/utils/restatement';
 import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile } from '../src/types/enterprise';
 
@@ -60,6 +60,51 @@ const buildV3LegacyArchive = (): SaveFile => {
     resetCount: 0, version: 3, state: legacy, createdAt: 'x',
   };
 };
+
+// 只推进**一季**的未迁移 v3 帧（评审 round-4 new finding #1 的探针形状）。构造与 buildV3LegacyArchive
+// 同源：真引擎跑一季、把覆盖那笔手操的重述串减回旧口径、再删掉 v4 才有的 kind 字段。
+// 为什么只要单季：删掉那笔注资后剩下的流水恰好只有「种子 + 引擎自动项」，其净额正是旧口径串记下的那个数，
+// 于是 A 与 B 相等（实测都是 18）而帧内现金是 198——B 这一侧不提供任何独立信息，印出来的判据却与 v4 帧上
+// 的篡改判定逐字相同（「账实不符（流水条目与现金不符）」）。要说清「旧档的不符 ≠ 篡改」，这个区分必须
+// 由 audit.ts 的文案与统计量给出，而不是让消费方各自去读 version。
+// 调用方需自行处于 vi.useFakeTimers() 中（同 buildV3LegacyArchive）。
+const buildUnmigratedV3Frame = (id = 'v3-coverage-escape'): SaveFile => {
+  store().registerOtherCashFlow('旧档注资', 180);   // 第1年第1季，落在串#1 的窗口里
+  expect(store().validationError).toBeNull();
+  vi.advanceTimersByTime(10);
+  store().nextQuarter();                            // → 第2季：串#1 的新口径应当含这笔 +180
+  expect(store().validationError).toBeNull();
+
+  const legacy = JSON.parse(JSON.stringify(store().state)) as ReturnType<typeof createFreshState>;
+  const manual = legacy.operation.financialLogs.filter(l => l.operator === '企业1管理者');
+  expect(manual.map(l => l.cashChange)).toEqual([180]);   // 只有这一笔手操，否则下面删一条就不止少 180
+  for (const flow of manual) {
+    const covered = legacy.operation.financialLogs
+      .filter(l => l.kind === 'summary' && l.timestamp >= flow.timestamp)
+      .sort((a, b) => a.timestamp - b.timestamp);
+    expect(covered.length).toBeGreaterThan(0);
+    covered[0].cashChange -= flow.cashChange;      // 旧口径：引擎自动项里没有它
+  }
+  for (const l of legacy.operation.financialLogs) delete (l as Partial<FinancialLogRecord>).kind;
+  vi.advanceTimersByTime(10);                      // 冲掉推进排下的自动存档定时器
+
+  return {
+    id, name: `帧${id}`, enterpriseName: '企业1', timestamp: 1,
+    resetCount: 0, version: 3, state: legacy, createdAt: 'x',
+  };
+};
+
+// 把「一条流水没落账」这件事做进帧里：按描述删掉那笔注资（v3 时代确有现金变动没写进流水的形态）
+const dropFlow = (save: SaveFile, description: string): SaveFile => ({
+  ...save,
+  state: {
+    ...save.state,
+    operation: {
+      ...save.state.operation,
+      financialLogs: save.state.operation.financialLogs.filter(l => !l.description.includes(description)),
+    },
+  },
+});
 
 describe('账实重演算（双重建）', () => {
   it('合法帧通过：两种重建都等于现金', () => {
@@ -337,7 +382,8 @@ describe('包内定位', () => {
     expect(results.map(r => r.saveId)).toEqual(['f1', 'f2', 'f3']);  // 输入乱序也要按时间升序返回
     expect(firstDivergingFrame(results)?.saveId).toBe('f3');
     expect(firstDivergingFrame(results)?.quarter).toBe(1);
-    expect(auditSummary(results)).toEqual({ total: 3, ok: 2, mismatch: 1, noAnchor: 0 });
+    // 三帧都是 frame() 造的 v4 帧，那一条 mismatch 是「改帧末现金」造出来的 → 不算旧档的不符
+    expect(auditSummary(results)).toEqual({ total: 3, ok: 2, mismatch: 1, noAnchor: 0, legacyMismatch: 0 });
   });
 
   // 同一毫秒里落两帧是常态（手动存档与 nextQuarter 触发的自动存档可撞在同一个 Date.now() 上），
@@ -369,7 +415,8 @@ describe('包内定位', () => {
     expect(firstDivergingFrame(results)?.saveId).toBe('earlier');      // no-anchor 也计入「不平」
     expect(results[0].flowRebuilt).toBeNull();                         // NaN 会让下游求和/比较静默失真
     expect(results[0].restatedRebuilt).toBeNull();
-    expect(auditSummary(results)).toEqual({ total: 2, ok: 1, mismatch: 0, noAnchor: 1 });
+    // no-anchor 那条不计进 legacyMismatch：它压根没跑成判定，与「旧档的不符 ≠ 篡改」是两回事
+    expect(auditSummary(results)).toEqual({ total: 2, ok: 1, mismatch: 0, noAnchor: 1, legacyMismatch: 0 });
   });
 });
 
@@ -509,6 +556,53 @@ describe('原始 v3 帧（日志没有 kind 字段）', () => {
       expect(before.status).toBe('ok');
       expect(after.status).toBe(before.status);     // 同一份账，迁移前后判定不能变
       expect(after.cause).toBe(before.cause);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// 评审 round-3 N1 修好后，真正的未迁移 v3 帧也开始跑 A 侧判定（这是对的：不跑就什么都看不见）。
+// 副作用是：一份**天然不平**的老档（v3 时代确有现金变动没写进流水）印出来的判据，与 v4 帧上的篡改判定
+// 逐字相同。数据里本来就有这个区分（restatementCaliber !== 'v4'），却一个字都没说出来——而旧的那条
+// 口径文案「旧口径链，不作金额结论」说的是 **B 读数**的身份，不是 **A 判定**的含义，正好把两者搅在一起。
+// 本例把这件事钉死：同一句判据、两种含义，分开说只能靠 CALIBER_TEXT 的文案与 auditSummary.legacyMismatch。
+describe('旧档的「不符」与篡改分开说', () => {
+  it('未迁移 v3 帧天然不平：caliber 为 legacy-unconverted、文案言明「不等于篡改」、legacyMismatch 计 1', () => {
+    vi.useFakeTimers();
+    try {
+      const v3 = buildUnmigratedV3Frame();
+      expect(v3.state.operation.financialLogs.some(l => l.kind === undefined)).toBe(true);  // 确实是未迁移形状
+      // 夹具本身平账：不先钉这句，下面那句「不平」可能只是夹具写坏了而不是漏记了一笔
+      const intact = auditFrame(v3);
+      expect(intact.status).toBe('ok');
+
+      const frame3 = dropFlow(v3, '旧档注资');
+      const r = auditFrame(frame3);
+      // 评审探针的实测对：A 与 B 都是 18、帧内现金 198（A 少的正是被删掉的那 180，B 本来就停在 18）
+      expect(r.status).toBe('mismatch');
+      expect(r.cause).toBe('flow-log');
+      expect(r.flowRebuilt).toBe(18);
+      expect(r.restatedRebuilt).toBe(18);                     // B ≡ A：这一侧给不出任何独立证据
+      expect(r.actualCash).toBe(198);
+      expect(r.restatementCaliber).toBe('legacy-unconverted');
+      expect(CAUSE_TEXT[r.cause ?? 'both']).toBe('流水条目与现金不符');   // 与 v4 帧上的篡改判定同一句话
+      expect(CALIBER_TEXT[r.restatementCaliber]).toContain('不等于篡改');  // 而这一句把它说开
+
+      const summary = auditSummary([r]);
+      expect(summary).toEqual({ total: 1, ok: 0, mismatch: 1, noAnchor: 0, legacyMismatch: 1 });
+      // 平账的那一帧不计进来：legacyMismatch 是 mismatch 的**子集**（status 与 caliber 两个条件都在场），
+      // 少了前半句它就退化成「旧档条数」，报告里会被读成「旧档的不符数」
+      expect(auditSummary([intact, r])).toEqual({ total: 2, ok: 1, mismatch: 1, noAnchor: 0, legacyMismatch: 1 });
+
+      // 同一份不平的账、同一条日志，只把版本标签换成 4：mismatch 照旧是 1，但它不再算进「旧档的不符」
+      const r4 = auditFrame({ ...frame3, version: 4 });
+      expect(r4.status).toBe('mismatch');
+      expect(r4.restatementCaliber).toBe('v4');
+      expect(CALIBER_TEXT[r4.restatementCaliber]).toContain('可作金额证据');
+      const summary4 = auditSummary([r4]);
+      expect(summary4.mismatch).toBe(1);
+      expect(summary4.legacyMismatch).toBe(0);                // ← 这条配对才让该统计量有意义，不是装饰
     } finally {
       vi.useRealTimers();
     }
