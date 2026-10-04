@@ -291,8 +291,8 @@ describe('账实重演算（双重建）', () => {
       s.operation.financialLogs.push(mkFlow({ id: 'bogus', description: '手改出来的天文数字', cashChange: cashChange as number }));
     });
     for (const [label, r] of [
-      ['Infinity', auditFrame(bogus(1e999))],        // JSON.parse('1e999') 就是 Infinity
-      ['NaN', auditFrame(bogus('1'))],               // 手改成字符串同理加出 NaN
+      ['Infinity', auditFrame(bogus(1e999))],       // JSON.parse('1e999') 就是 Infinity
+      ['NaN', auditFrame(bogus(undefined))],        // 被删掉的 cashChange 是 undefined，加法才真出 NaN（null 会被当成 0）
     ] as const) {
       expect(r.status, label).toBe('mismatch');
       expect(r.cause, label).not.toBeNull();
