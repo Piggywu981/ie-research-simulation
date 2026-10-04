@@ -150,13 +150,17 @@ const ProductionCenter: React.FC = () => {
                 <div className="flex gap-2 mt-3">
                   {factory.holding !== 'owned' && (
                     <button onClick={() => buyFactory(factory.id)} disabled={operation.currentQuarter !== 4}
+                      aria-disabled={operation.currentQuarter !== 4}
+                      aria-describedby={operation.currentQuarter !== 4 ? `factory-${factory.id}-trade-note` : undefined}
                       className="text-xs px-3 py-1 rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
-                      title={operation.currentQuarter !== 4 ? '厂房购买仅在年末（第4季度）办理' : `以 ${factory.purchasePrice}M 买断`}>
+                      title={operation.currentQuarter !== 4 ? '厂房购买仅在年末（第4季度）办理' : factory.holding === 'leased' ? `以 ${factory.purchasePrice}M 买断` : `以 ${factory.purchasePrice}M 新购`}>
                       购买 {factory.purchasePrice}M
                     </button>
                   )}
                   {factory.holding === 'none' && (
                     <button onClick={() => leaseFactory(factory.id)} disabled={operation.currentQuarter !== 4}
+                      aria-disabled={operation.currentQuarter !== 4}
+                      aria-describedby={operation.currentQuarter !== 4 ? `factory-${factory.id}-trade-note` : undefined}
                       className="text-xs px-3 py-1 rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50"
                       title={operation.currentQuarter !== 4 ? '厂房租赁仅在年末（第4季度）办理' : `次年起按 ${RENT_BY_TYPE[factory.type]}M/年计租`}>
                       租赁
@@ -164,12 +168,24 @@ const ProductionCenter: React.FC = () => {
                   )}
                   {factory.holding === 'owned' && (
                     <button onClick={() => sellFactory(factory.id)} disabled={factory.productionLines.length > 0}
+                      aria-disabled={factory.productionLines.length > 0}
+                      aria-describedby={factory.productionLines.length > 0 ? `factory-${factory.id}-vacate-note` : undefined}
                       className="text-xs px-3 py-1 rounded bg-gray-600 text-white hover:bg-gray-700 disabled:opacity-50"
-                      title={factory.productionLines.length > 0 ? '需先腾空该厂房内的生产线' : `售价 ${factory.purchasePrice}M，计入4Q应收款`}>
-                      出售 +{factory.purchasePrice}M（4Q到账）
+                      title={factory.productionLines.length > 0 ? '需先腾空该厂房内的生产线' : `售价 ${factory.purchasePrice}M，计入4Q应收款（4个季度账期后到账）`}>
+                      出售 +{factory.purchasePrice}M（4季度账期后到账）
                     </button>
                   )}
                 </div>
+                {factory.holding !== 'owned' && operation.currentQuarter !== 4 && (
+                  <div id={`factory-${factory.id}-trade-note`} className="text-xs text-gray-500 mt-1">
+                    年末（第4季度）可办理
+                  </div>
+                )}
+                {factory.holding === 'owned' && factory.productionLines.length > 0 && (
+                  <div id={`factory-${factory.id}-vacate-note`} className="text-xs text-gray-500 mt-1">
+                    需先腾空该厂房内的生产线
+                  </div>
+                )}
               </div>
               
               {/* 生产线列表 */}
