@@ -99,7 +99,7 @@ describe('账实重演算（双重建）', () => {
     vi.useFakeTimers();
     try {
       for (let i = 0; i < 2; i++) store().nextQuarter();   // 走到第 3 季初：短贷只在 1/3 季初放贷
-      // 这 5ms 同时也把 nextQuarter 排下的自动存档 setTimeout（enterpriseStore.ts:2872-2875）一并冲掉，
+      // 这 5ms 同时也把 nextQuarter 末尾排下的自动存档定时器（setTimeout(() => get().autoSaveGame(), 0)）一并冲掉，
       // 只是无害——tests/setup.ts 把 localStorage 换成了内存实现，落不掉真存档。
       vi.advanceTimersByTime(5);                            // 推进之后再过 5ms 才手操
       store().registerOtherCashFlow('季中收入', 30);         // 晚于最新 summary 的玩家流水
