@@ -633,7 +633,7 @@ export const digestFrame = (save: SaveFile): Promise<string> =>
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run tests/saveDigest.test.ts`
-Expected: 全过。Vitest 环境若无 `crypto.subtle`，用例会走 `unavailable` 分支——这恰好验证降级，不得为让哈希分支跑起来而伪造全局对象。
+Expected: 全过。**落地实况（Task 4 已按此实现，后续任务照此消费）**：本仓库 Node 环境**有** `crypto.subtle`，所以 `sha256:` 分支是真实执行的那条，降级分支必须用 `vi.stubGlobal` 造出来才覆盖得到——计划原写的"若无 subtle 则自然走 unavailable"是反的。展开写法用 `Array.from(new Uint8Array(buf))`，`[...new Uint8Array(buf)]` 在本仓库 `target: "es5"` 下直接 TS2802（`tsc --noEmit` 会红）。规范化侧额外定死了四类奇异输入（`undefined`/函数/symbol/bigint → `null`；`Date` 走 `toJSON` 的 ISO 串，与写进包里的字节一致；循环引用沿祖先路径折成 `null`；`NaN`/`Infinity` → `null`，于是 `{cash:NaN}` 与 `{cash:null}` 同指纹——已知取舍，非有限读数的严重性由审计侧按「null 而非 NaN」另行处理），键名一律过 `JSON.stringify` 转义（不转义会让 `{ 'a:1,b': 2 }` 与 `{ a: 1, b: 2 }` 同串，且拼出的串不再是合法 JSON）。
 
 - [ ] **Step 5: 提交**
 
@@ -1128,6 +1128,7 @@ import type { FrameAudit } from '../utils/audit';
     summary: ReturnType<typeof auditSummary>;
     mismatches: string[];
     digestMismatch: string[];
+    digestSkipped: string[];
     diverging: FrameAudit | null;
     caliberNotes: string[];
   } | null>(null);
@@ -1152,20 +1153,32 @@ import type { FrameAudit } from '../utils/audit';
       // 包内定位：第一处不平的帧才是"分歧起点"，其余帧的不平是它的下游后果（Task 3 定的判据）
       const diverging = firstDivergingFrame(results);
       const digestMismatch: string[] = [];
+      const digestSkipped: string[] = [];
       for (const save of frames) {
         const declared = pkg.digests.frames[save.id];
-        if (!declared || !declared.startsWith('sha256:')) continue;
-        if (await digestFrame(save) !== declared) digestMismatch.push(`${save.name} 的指纹与包内记录不一致`);
+        // 按**前缀**分派（Task 4 实况）：`unavailable:` 后面可能是 `insecure-context`，也可能是摘要调用
+        // 自身失败带出的 errorname，不能只认那一种；空串/缺字段一律算"未计算"，绝不参与比对。
+        if (!declared || !declared.startsWith('sha256:')) {
+          digestSkipped.push(`${save.name}：哈希未计算${declared ? `（${declared}）` : '（包内无记录）'}`);
+          continue;
+        }
+        // digestFrame 对畸形帧会**同步**抛（参数求值就在 digestText 之前），Task 6 的结构校验是第一道闸，
+        // 这里再兜一层：指纹算不出来只能记成"未计算"，不能让它把整个预览打挂、更不能印成"不一致"。
+        try {
+          if (await digestFrame(save) !== declared) digestMismatch.push(`${save.name} 的指纹与包内记录不一致`);
+        } catch {
+          digestSkipped.push(`${save.name}：哈希无法计算（帧结构异常）`);
+        }
       }
       const caliberNotes = [...new Set(results.map(r => CALIBER_TEXT[r.restatementCaliber]))];
-      setPending({ pkg, summary: auditSummary(results), mismatches, digestMismatch, diverging, caliberNotes });
+      setPending({ pkg, summary: auditSummary(results), mismatches, digestMismatch, digestSkipped, diverging, caliberNotes });
     } finally {
       setBusy(false);
     }
   };
 ```
 
-预览面板（`pending` 非空时渲染，此时**未改动任何状态**）显示：帧数与时间跨度、当前帧 `第Y年第Q季 / 现金 / 应收合计 / 长短期贷款本金合计 / 重置次数`、`mismatches`（红字，**不阻断**）、`digestMismatch`、`diverging`（非 null 时一行「分歧始于：X（第Y年第Q季）」，null 时「未发现账实分歧」）、`caliberNotes`（灰字小字，逐条列出包内出现过的 B 侧读数身份）。两个动作按钮：
+预览面板（`pending` 非空时渲染，此时**未改动任何状态**）显示：帧数与时间跨度、当前帧 `第Y年第Q季 / 现金 / 应收合计 / 长短期贷款本金合计 / 重置次数`、`mismatches`（红字，**不阻断**）、`digestMismatch`（红字，**不阻断**）、`digestSkipped`（灰字：「哈希未计算」的每一帧与原因，规格 §4.4 要求非安全上下文必须显式说明、绝不静默跳过）、`diverging`（非 null 时一行「分歧始于：X（第Y年第Q季）」，null 时「未发现账实分歧」）、`caliberNotes`（灰字小字，逐条列出包内出现过的 B 侧读数身份）。两个动作按钮：
 
 - 「仅加入存档列表」（默认样式）→ `const r = importSaveFiles(pkg.saves)` → `setValidationError(null)` + 关闭面板；暂停时 `disabled` 并给可见说明。
 - 「设为当前进度」→ `applyImportedState(pkg.current, pkg.app.saveVersion)` → 关闭面板；同样受暂停门控。
