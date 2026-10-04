@@ -14,11 +14,16 @@ export interface FrameAudit {
   year: number;
   quarter: number;
   flowRebuilt: number | null;      // A：Σ 全部 flow（含期初种子）
-  restatedRebuilt: number | null;  // B：期初种子 + Σ 重述串 + 尾随流水
+  restatedRebuilt: number | null;  // B：期初种子 + Σ 重述串 + 尾随流水（version < 4 的旧档只作展示，不参与判定）
   actualCash: number;
   status: AuditStatus;
   cause: AuditCause | null;
 }
+
+// summary.cashChange 从这一刻起才是「自上一条重述串以来的全部净变动」（规格 §4.4 第四次更正）。
+// 这是**口径变更发生的版本**，不是当前的 SAVE_FORMAT_VERSION：版本再往上加也不能把 v4 帧重新当成旧档，
+// 故刻意不引用那个常量。
+const RESTATED_FULL_NET_FROM_VERSION = 4;
 
 const SEED_DESCRIPTION = '初始现金';
 const isSeed = (l: FinancialLogRecord) => l.description === SEED_DESCRIPTION;
@@ -46,27 +51,39 @@ export function auditFrame(save: SaveFile): FrameAudit {
   // B 式：期初种子 + Σ重述串 + 晚于最新一条重述串的流水（季中手动存档留下的开尾缝隙）。
   // 「晚于」取严格大于，前提是推进与后续手操不落在 Date.now() 的同一毫秒里——真实手操隔着秒，
   // 同毫秒时这笔流水既不在重述串里也不进尾项，B 会少算并假报 restated-log（测试里用假时钟隔开）。
+  // 帧里没有重述串时 latestRestatedAt 取 0，尾项自动吞下全部非种子流水，于是 B ≡ A：
+  // 这就是正确的算法——那一帧根本没有重述串可篡改，B 不携带任何独立信息，
+  // 不能据「B 与 A 不等」去指控流水或帧末现金被动过（旧写法在此处塌回种子，对第 1 季的手动存档假报 restated-log）。
   const summaries = logs.filter((l) => l.kind === 'summary');
   const latestRestatedAt = summaries.reduce((t, l) => Math.max(t, l.timestamp), 0);
-  const tailFlows = summaries.length === 0
-    ? seedCash
-    : sumBy(logs, (l) => l.kind === 'flow' && !isSeed(l) && l.timestamp > latestRestatedAt);
-  const restatedRebuilt = summaries.length === 0
-    ? seedCash
-    : seedCash + sumBy(summaries, () => true) + tailFlows;
+  const restatedSum = summaries.reduce((t, l) => t + l.cashChange, 0);
+  const tailFlows = sumBy(logs, (l) => l.kind === 'flow' && !isSeed(l) && l.timestamp > latestRestatedAt);
+  const restatedRebuilt = seedCash + restatedSum + tailFlows;
+  // 旧档（version < 4）的重述串是旧口径（只累加引擎自动项、漏掉玩家主动交易），迁移不重写这些值，
+  // 于是 B 对这种帧必然不平。B 在这里只作展示读数，绝不参与判定：判据降级为单侧（只看 A），
+  // 否则每个健康的老档都会被写成一条「重述串被篡改」的伪证（S-T5/S-T7/S-T8 因此无需各自再补版本分支）。
+  const legacyRestated = (save.version ?? 0) < RESTATED_FULL_NET_FROM_VERSION;
   const aOk = flowRebuilt === base.actualCash;
   const bOk = restatedRebuilt === base.actualCash;
 
-  if (aOk && bOk) return { ...base, flowRebuilt, restatedRebuilt, status: 'ok', cause: null };
-  const cause: AuditCause = aOk ? 'restated-log' : bOk ? 'flow-log' : 'both';
+  if (aOk && (bOk || legacyRestated)) return { ...base, flowRebuilt, restatedRebuilt, status: 'ok', cause: null };
+  // 降级分支只在 A 已不平（两侧必然都不平）时到达：此时没有可信的第二侧重建可供进一步区分，
+  // 只能指认「流水条目与现金不符」；restated-log 要靠 B 作证、both 要靠 B 排除，旧档都给不出这个证据。
+  const cause: AuditCause = legacyRestated
+    ? 'flow-log'
+    : aOk ? 'restated-log' : bOk ? 'flow-log' : 'both';
   return { ...base, flowRebuilt, restatedRebuilt, status: 'mismatch', cause };
 }
 
 // 包内定位：按时间升序找最早不平的那一帧（规格 §4.4；帧自带逐季快照，这是唯一可靠的季度坐标）。
 // no-anchor 也算"有问题的最早一帧"，但由调用方按 status 分述，不与账实不符混为一谈。
 // 先浅拷贝再排序：调用方传入的可能是 store 里的存档列表，不允许被就地改序。
+// timestamp 相同（同一毫秒里的手动存档与 nextQuarter 触发的自动存档很常见）时用 id 兜底：
+// 比较器必须全序，否则 sort 的稳定性把输入数组的顺序当成结果顺序，firstDivergingFrame 会报错季。
 export const auditFrames = (frames: SaveFile[]): FrameAudit[] =>
-  [...frames].sort((a, b) => a.timestamp - b.timestamp).map(auditFrame);
+  [...frames]
+    .sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id))
+    .map(auditFrame);
 
 export const firstDivergingFrame = (results: FrameAudit[]): FrameAudit | null =>
   results.find((r) => r.status !== 'ok') ?? null;

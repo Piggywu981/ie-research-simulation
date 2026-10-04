@@ -49,6 +49,25 @@ describe('账实重演算（双重建）', () => {
     expect(r.cause).toBeNull();
   });
 
+  // 评审 C1：旧写法在「本帧还没有重述串」时把 B 塌回种子（20），A 却是真实现金，
+  // 于是第 1 年第 1 季做过任何一笔金钱操作（注资/短贷/购线…）后手动存档，
+  // 都会被指控「重述串被篡改」——而这一帧根本没有重述串可篡改。
+  // latestRestatedAt = 0 时尾项自动吞下全部非种子流水，B ≡ A：没有重述串，B 就不携带独立信息。
+  it('首季还没有重述串、但已有一笔手操流水：B 等价于 A，不得假报 restated-log', () => {
+    store().registerOtherCashFlow('测试注资', 180);
+    expect(store().validationError).toBeNull();
+    const state = store().state;
+    expect(state.operation.financialLogs.filter(l => l.kind === 'summary')).toHaveLength(0);
+
+    const r = auditFrame({ ...frame('y1q1'), state });
+    expect(r.status).toBe('ok');
+    expect(r.cause).toBeNull();
+    expect(r.actualCash).toBe(200);
+    expect(r.flowRebuilt).toBe(r.actualCash);
+    expect(r.restatedRebuilt).toBe(r.actualCash);
+    expect(r.restatedRebuilt).toBe(r.flowRebuilt);
+  });
+
   it('真跑 5 季：未篡改必须 ok，篡改一季流水后 cause = flow-log', () => {
     store().registerOtherCashFlow('测试注资', 180);   // 注入必须入账，否则 A/B 双双不平（规格 §2 勘误）
     for (let i = 0; i < 5; i++) store().nextQuarter();
@@ -60,7 +79,13 @@ describe('账实重演算（双重建）', () => {
     expect(untouched.restatedRebuilt).toBe(untouched.actualCash);
 
     const tampered = JSON.parse(JSON.stringify(state)) as typeof state;
-    const target = tampered.operation.financialLogs.find(l => l.year === 1 && l.quarter === 3 && l.kind === 'flow');
+    // 钉住被篡改的那一条（评审：只按 (year,quarter,kind) 找，日志产出一变就可能改到别的行而测试照旧通过）
+    const target = tampered.operation.financialLogs.find(
+      l => l.year === 1 && l.quarter === 3 && l.kind === 'flow' && l.stepId === 'q-2'
+        && l.description === '更新短贷：无到期短贷'
+    );
+    expect(target).toBeDefined();                     // 找不到目标 = 本例根本没有篡改任何一条流水
+    expect(target!.cashChange).toBe(0);               // 篡改一条净额为 0 的行也能被查出来
     target!.cashChange += 7;
     const r = auditFrame({ ...frame('tampered'), state: tampered });
     expect(r.status).toBe('mismatch');
@@ -74,6 +99,8 @@ describe('账实重演算（双重建）', () => {
     vi.useFakeTimers();
     try {
       for (let i = 0; i < 2; i++) store().nextQuarter();   // 走到第 3 季初：短贷只在 1/3 季初放贷
+      // 这 5ms 同时也把 nextQuarter 排下的自动存档 setTimeout（enterpriseStore.ts:2872-2875）一并冲掉，
+      // 只是无害——tests/setup.ts 把 localStorage 换成了内存实现，落不掉真存档。
       vi.advanceTimersByTime(5);                            // 推进之后再过 5ms 才手操
       store().registerOtherCashFlow('季中收入', 30);         // 晚于最新 summary 的玩家流水
       store().applyShortTermLoan();                         // 同上，且金额不为 0
@@ -106,15 +133,15 @@ describe('账实重演算（双重建）', () => {
 
   // 已知边界（规格 §4.4 第四次更正的推论）：v3 存档里的重述串是旧口径（只累加引擎自动项、漏掉玩家主动交易），
   // 迁移不会重写这些值，于是 Σ summary 不再望远镜收敛到「期末现金 − 种子」，B 侧必然不平。
-  // 这条断言把「旧档只报状态、不作金额结论」钉住：S-T7/S-T8 需按 SaveFile.version < 4 分述，
-  // 不能把这种帧当成作弊证据。做法是把首条重述串还原成旧口径（减掉那笔同季注资），
-  // 复现规格 §4.4 记录的实测对：A 202 = 现金 202、B 只有 22。
-  it('v3 旧口径的重述串混进链里：B 少算玩家项、cause = restated-log（消费方须按 version 分述）', () => {
+  // 评审 I1：降级必须由审计器自己落实——auditFrame 手里就握着整个 SaveFile，version < 4 时 B 只算出来供展示，
+  // 不参与判定（判据退回单侧 A）。这条降级写在审计里，S-T5/S-T7/S-T8 三个消费方免费继承，
+  // 不必各自再补版本分支，也不会把旧口径链当成作弊证据。做法是把首条重述串还原成旧口径
+  // （减掉那笔同季注资），复现规格 §4.4 记录的实测对：A 202 = 现金 202、B 只有 22。
+  it('v3 旧链（version < 4）：B 只作展示、判据降级为 A-only，健康的旧档不得被指控篡改重述串', () => {
     store().registerOtherCashFlow('测试注资', 180);
     for (let i = 0; i < 5; i++) store().nextQuarter();
     const state = store().state;
-    const current = auditFrame({ ...frame('v4'), state });
-    expect(current.status).toBe('ok');
+    expect(auditFrame({ ...frame('v4'), state }).status).toBe('ok');
 
     // financialLogs 是「新的在前」（所有产生点都 prepend），故末条 summary 就是首次推进那条
     const legacy = JSON.parse(JSON.stringify(state)) as typeof state;
@@ -122,11 +149,29 @@ describe('账实重演算（双重建）', () => {
     expect(summaries).toHaveLength(5);
     summaries[summaries.length - 1].cashChange -= 180;   // 旧口径：该季只记引擎自动项
 
-    const r = auditFrame({ ...frame('v3-migrated'), state: legacy });
-    expect(r.status).toBe('mismatch');
-    expect(r.cause).toBe('restated-log');                // A 侧完好：只有重述链的口径是旧的
+    const r = auditFrame({ ...frame('v3-migrated'), state: legacy, version: 3 });  // 重述口径自 v4 起，v3 及更早都是旧链
+    expect(r.status).toBe('ok');                         // A 完好 → 旧档不作篡改指控（此前被钉成 restated-log 的伪证）
+    expect(r.cause).toBeNull();
     expect(r.flowRebuilt).toBe(r.actualCash);
-    expect(r.restatedRebuilt).toBe(r.actualCash - 180);
+    expect(r.restatedRebuilt).toBe(r.actualCash - 180);  // 仍给出读数，供报告注明「旧口径链，不作金额结论」
+  });
+
+  // 同一条旧链上真的被动过流水时，降级不能把问题一并抹掉：A 仍不平 → mismatch。
+  // 归因只能是 flow-log（CAUSE_TEXT 的「流水条目与现金不符」正是 A 不平这件事本身）；
+  // restated-log 要靠 B 作证、both 要靠 B 排除，旧口径的 B 给不出这个证据。
+  it('v3 旧链 + 篡改一条流水：仍报 mismatch，cause 降级为 flow-log（不用旧口径的 B 去凑 both）', () => {
+    store().registerOtherCashFlow('测试注资', 180);
+    for (let i = 0; i < 5; i++) store().nextQuarter();
+    const legacy = JSON.parse(JSON.stringify(store().state)) as ReturnType<typeof createFreshState>;
+    const summaries = legacy.operation.financialLogs.filter(l => l.kind === 'summary');
+    summaries[summaries.length - 1].cashChange -= 180;   // 旧口径
+    const flow = legacy.operation.financialLogs.find(l => l.year === 1 && l.quarter === 3 && l.kind === 'flow')!;
+    flow.cashChange += 7;                                // 真的改了一条流水
+
+    const r = auditFrame({ ...frame('v3-tampered'), state: legacy, version: 3 });
+    expect(r.status).toBe('mismatch');
+    expect(r.cause).toBe('flow-log');
+    expect(r.flowRebuilt).toBe(r.actualCash + 7);
   });
 });
 
@@ -135,11 +180,24 @@ describe('包内定位', () => {
     ({ ...frame(id, (s) => { s.finance.cash = cash; }), timestamp: ts });
 
   it('最早不平的那一帧给出"自第X年第Y季起"的坐标', () => {
-    const results = auditFrames([stamped('f3', 3, 99), frame('f1', (s) => { s.operation.currentQuarter = 1; }), stamped('f2', 2, 20)]);
+    const results = auditFrames([stamped('f3', 3, 99), frame('f1'), stamped('f2', 2, 20)]);
     expect(results.map(r => r.saveId)).toEqual(['f1', 'f2', 'f3']);  // 输入乱序也要按时间升序返回
     expect(firstDivergingFrame(results)?.saveId).toBe('f3');
     expect(firstDivergingFrame(results)?.quarter).toBe(1);
     expect(auditSummary(results)).toEqual({ total: 3, ok: 2, mismatch: 1, noAnchor: 0 });
+  });
+
+  // 同一毫秒里落两帧是常态（手动存档与 nextQuarter 触发的自动存档可撞在同一个 Date.now() 上），
+  // 而 sort 对「比较器返回 0」只保证稳定不保证次序——不写全序比较器时，谁在前取决于传入数组的顺序，
+  // firstDivergingFrame 于是可能报错那一季的坐标。
+  it('timestamp 相同则按 id 定序：同一毫秒的两帧不因传入顺序而改变定位', () => {
+    const q2 = { ...frame('f-q2', (s) => { s.finance.cash = 99; s.operation.currentQuarter = 2; }), timestamp: 7 };
+    const q1 = { ...frame('f-q1', (s) => { s.finance.cash = 99; }), timestamp: 7 };   // 新开局即第 1 年第 1 季
+    for (const input of [[q2, q1], [q1, q2]]) {
+      const results = auditFrames(input);
+      expect(results.map(r => r.saveId)).toEqual(['f-q1', 'f-q2']);
+      expect(firstDivergingFrame(results)?.quarter).toBe(1);
+    }
   });
 
   it('全部通过时 firstDivergingFrame 返回 null', () => {

@@ -93,6 +93,29 @@ describe('现金流水账不变量', () => {
     expect(summaries[0].cashChange - (state.finance.cash - 200)).toBe(180);
   });
 
+  // 评审 I2：重述链的链头读的是上一条 summary 的 newCash，但 migrateState 只补 kind、不回填 newCash，
+  // 所以接着 v1/v2 档案推进时 previousRestatedCash = undefined，
+  // restatedDelta = finalCash - undefined = NaN 会被原样写进 quarterEndLog.cashChange 并随存档落盘
+  // （brief 明令审计侧不得引入 NaN，这条把同一个隐患从写入端堵住）。
+  it('链头 summary 缺 newCash（v1/v2 旧档）：重述串退回种子链头，绝不写出 NaN', () => {
+    store().registerOtherCashFlow('测试注资', 180);
+    store().nextQuarter();
+
+    const legacy = JSON.parse(JSON.stringify(store().state)) as ReturnType<typeof createFreshState>;
+    legacy.operation.financialLogs.forEach(l => {
+      if (l.kind === 'summary') delete (l as Partial<FinancialLogRecord>).newCash;   // 模拟 migrateState 不补的这个字段
+    });
+    expect(legacy.operation.financialLogs.some(l => l.kind === 'summary' && l.newCash === undefined)).toBe(true);
+    useEnterpriseStore.setState({ state: legacy, validationError: null });
+
+    store().nextQuarter();
+    const summaries = store().state.operation.financialLogs.filter(l => l.kind === 'summary');
+    expect(summaries).toHaveLength(2);
+    // 本例的结论：新串必须是有限数，且取的是种子链头 20（旧档余额已不可信，只能退回可核实的最早锚点）
+    expect(Number.isFinite(summaries[0].cashChange)).toBe(true);
+    expect(summaries[0].cashChange).toBe(store().state.finance.cash - 20);
+  });
+
   // 真实跑法（不注资、不改数）才是不变量的主场：S-T3 的「未篡改必须审计为 ok」直接依赖这条
   it('真实 5 季推进（无任何注入）：Σflow === 现金，每季恰好一条 summary', () => {
     for (let i = 0; i < 5; i++) store().nextQuarter();

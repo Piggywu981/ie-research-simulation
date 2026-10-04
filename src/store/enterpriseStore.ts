@@ -2072,7 +2072,12 @@ export const useEnterpriseStore = create<{
       const seedCash = priorLogs
         .filter(l => l.kind === 'flow' && l.description === '初始现金')
         .reduce((t, l) => t + l.cashChange, 0);
-      const previousRestatedCash = latestRestated ? latestRestated.newCash : (seedCash || initialCash);
+      // 链头必须真是数字才敢用：v1/v2 旧档经 migrateState 只补 kind、不回填 newCash（字段缺省即 undefined），
+      // 直接相减会得到 finalCash - undefined = NaN，并把 NaN 写进 quarterEndLog.cashChange 落进存档。
+      // 非有限值一律退回上面那条种子链头（与整串还没有 summary 时同一条回退路径）。
+      const previousRestatedCash = latestRestated && Number.isFinite(latestRestated.newCash)
+        ? latestRestated.newCash
+        : (seedCash || initialCash);
 
       // 2. 更新短贷/还本付息：到期短贷一次还本付息（运行控制表：季度-2）
       const shortSettlement = settleDueShortLoans(state.state.finance.loans, newAbsQuarter);

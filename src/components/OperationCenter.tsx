@@ -695,9 +695,11 @@ const QuarterCell: React.FC<{
     return log.year === year && log.quarter === quarter && matchOperation(log, step.description);
   });
 
-  // 根据财务日志获取具体数值
+  // 根据财务日志获取具体数值。候选集排除 summary：matchOperation 是宽松的文本匹配，
+  // 而 v4 起 summary.cashChange 是「整季净额重述」，一旦被当成某个操作步骤的金额就会重复计
+  // （isCompleted 保留看全部日志，故重述串仍能点亮格子，只是不供数值）。
   const financialLog = financialLogs.find(log => {
-    return log.year === year && log.quarter === quarter && matchOperation(log, step.description);
+    return log.kind !== 'summary' && log.year === year && log.quarter === quarter && matchOperation(log, step.description);
   });
 
   // 检查是否有其他相关日志

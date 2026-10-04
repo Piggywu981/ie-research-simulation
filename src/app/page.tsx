@@ -330,7 +330,9 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {state.operation.financialLogs.slice(0, 5).map((log: FinancialLogRecord) => (
+                      {/* 只列 flow：summary 是整季净额的重述串，v4 起 cashChange 含玩家主动交易，
+                          把它当一条「现金变动」印出来会与同季的流水重复计（规格 §4.1）。 */}
+                      {state.operation.financialLogs.filter((log: FinancialLogRecord) => log.kind === 'flow').slice(0, 5).map((log: FinancialLogRecord) => (
                         <tr key={log.id} className="hover:bg-gray-50">
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             第{log.year}年{log.quarter}Q
