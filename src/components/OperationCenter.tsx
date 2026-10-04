@@ -49,13 +49,24 @@ const getLatestSaveFile = (
   return [...targetSaveFiles].sort((a, b) => b.timestamp - a.timestamp)[0];
 };
 
+// 补充关键词：行名须与课程 CSV 原文一致（CONTROL_STEPS 是唯一来源），但事件文案的用词不完全同词——
+// 年末租金日志是「支付厂房租金：…」、新租日志是「新租厂房：…」，都不含行名拆出的「支付租金」子串，
+// 于是每年照付的租金在页面上只能显示成横杠。这里仅为本页单元格的判定补精确关键词；
+// 导出 CSV 由 buildYearControlTable 按 stepId 取数，不经过本函数，因此不受影响。
+const EXTRA_STEP_KEYWORDS: Record<string, string[]> = {
+  '支付租金/购买厂房': ['支付厂房租金', '新租厂房'],
+};
+
 // 工具函数：匹配操作与日志
 const matchOperation = (log: any, stepDescription: string): boolean => {
   const logText = (log.action || log.description || '').toLowerCase();
   const stepText = stepDescription.toLowerCase();
 
   // 关键词匹配
-  const keyWords = stepText.split(/[\s/、（）]/).filter(word => word.length > 0);
+  const keyWords = [
+    ...stepText.split(/[\s/、（）]/).filter(word => word.length > 0),
+    ...(EXTRA_STEP_KEYWORDS[stepDescription] ?? []).map(word => word.toLowerCase()),
+  ];
   const matchCount = keyWords.filter(word => logText.includes(word)).length;
 
   // 如果匹配到2个以上关键词，或完全包含，或部分匹配
@@ -685,9 +696,12 @@ const QuarterCell: React.FC<{
   quarter,
   currentState
 }) => {
-  // 根据日志记录判断该操作是否完成
+  // 根据日志记录判断该操作是否完成：必须限定在本年本季度，
+  // 否则一次操作（如第2年第3季度出售厂房）会把 4 张年表 ×4 季共 16 个格子全部点亮，
+  // 与按 stepId+年+季取数的导出 CSV（其余 15 格为 —）自相矛盾。
+  // 本函数与 buildYearControlTable 的双轨推导是已知取舍，改由单一来源渲染另行跟进（见规格 §10）。
   const isCompleted = financialLogs.some(log => {
-    return matchOperation(log, step.description);
+    return log.year === year && log.quarter === quarter && matchOperation(log, step.description);
   });
 
   // 根据财务日志获取具体数值

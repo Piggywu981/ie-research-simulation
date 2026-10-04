@@ -97,6 +97,13 @@ const ProductionCenter: React.FC = () => {
     }
   };
 
+  // 已持有的厂房槽位数（自有+租赁）：全部卖掉后这里归 0，与「土地和建筑」同步骤降，
+  // 不会再出现「厂房数量 2 / 土地和建筑 0M」这种读成"我有两个不值钱的厂房"的并列。
+  const heldFactories = production.factories.filter((factory: Factory) => factory.holding !== 'none').length;
+  // 第4年只有第1季度的出售还能在模拟结束前走完 4Q 账期：季度推进在 第4年Q4→第5年Q1 后即冻结（isGameOver），
+  // 该季之后卖出的款项不会再转为现金，只能一直挂在应收账款里（要拿现金得走贴现）。故给出可见提示。
+  const lateYear4Sale = operation.currentYear === 4 && operation.currentQuarter > 1;
+
   return (
     <div className="space-y-6">
       {/* 生产数据概览 */}
@@ -105,7 +112,10 @@ const ProductionCenter: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-blue-50 p-4 rounded-lg">
             <div className="text-sm text-blue-600 mb-1">厂房数量</div>
-            <div className="text-2xl font-bold text-blue-800">{production.factories.length}</div>
+            <div className="text-2xl font-bold text-blue-800">{heldFactories}</div>
+            <div className="text-xs text-blue-500 mt-1">
+              已持有（自有+租赁）· 槽位共 {production.factories.length} 个
+            </div>
           </div>
           <div className="bg-purple-50 p-4 rounded-lg">
             <div className="text-sm text-purple-600 mb-1">土地和建筑</div>
@@ -169,7 +179,12 @@ const ProductionCenter: React.FC = () => {
                   {factory.holding === 'owned' && (
                     <button onClick={() => sellFactory(factory.id)} disabled={factory.productionLines.length > 0}
                       aria-disabled={factory.productionLines.length > 0}
-                      aria-describedby={factory.productionLines.length > 0 ? `factory-${factory.id}-vacate-note` : undefined}
+                      aria-describedby={
+                        [
+                          factory.productionLines.length > 0 ? `factory-${factory.id}-vacate-note` : '',
+                          lateYear4Sale ? `factory-${factory.id}-late-sale-note` : '',
+                        ].filter(Boolean).join(' ') || undefined
+                      }
                       className="text-xs px-3 py-1 rounded bg-gray-600 text-white hover:bg-gray-700 disabled:opacity-50"
                       title={factory.productionLines.length > 0 ? '需先腾空该厂房内的生产线' : `售价 ${factory.purchasePrice}M，计入4Q应收款（4个季度账期后到账）`}>
                       出售 +{factory.purchasePrice}M（4季度账期后到账）
@@ -184,6 +199,11 @@ const ProductionCenter: React.FC = () => {
                 {factory.holding === 'owned' && factory.productionLines.length > 0 && (
                   <div id={`factory-${factory.id}-vacate-note`} className="text-xs text-gray-500 mt-1">
                     需先腾空该厂房内的生产线
+                  </div>
+                )}
+                {factory.holding === 'owned' && lateYear4Sale && (
+                  <div id={`factory-${factory.id}-late-sale-note`} className="text-xs text-amber-600 mt-1">
+                    第4年出售：本年度内无法收现，款项将留在应收账款中（4Q应收款要走4个季度账期，模拟在第4年末结束；需要现金可按 7:1 贴现）
                   </div>
                 )}
               </div>
