@@ -116,6 +116,34 @@ describe('现金流水账不变量', () => {
     expect(summaries[0].cashChange).toBe(store().state.finance.cash - 20);
   });
 
+  // 评审 round-2 Item 1 的两条换算守卫。换算靠的是各条 summary 自带的 newCash，而 v1/v2 旧档经
+  // migrateState 只补 kind、从不回填 newCash（字段缺省即 undefined）：缺值的行必须原样跳过，
+  // 既不写进 cashChange（NaN 会随存档落盘，正是上面 I2 从写入端堵住的那个隐患），也不能当链头往下推。
+  // 数组按存档的真实形状「新的在前」摆放：链必须按 timestamp 推，数组顺序在这里不可信。
+  it('旧档重述串换算：按 timestamp 定序，缺 newCash 的行原样保留、绝不写 NaN', () => {
+    const legacy = createFreshState();
+    legacy.operation.financialLogs = [
+      mkLog({ id: 'seed', description: '初始现金', cashChange: 20, newCash: 20 }),
+      mkLog({ id: 'sum-4', description: '第1年第4季度结束现金变动', timestamp: 40, cashChange: 333, newCash: 80, kind: 'summary' }),
+      mkLog({ id: 'sum-3', description: '第1年第3季度结束现金变动', timestamp: 30, cashChange: 222, newCash: 50, kind: 'summary' }),
+      mkLog({ id: 'sum-2', description: '第1年第2季度结束现金变动', timestamp: 20, cashChange: 111, newCash: undefined as unknown as number, kind: 'summary' }),
+      mkLog({ id: 'sum-1', description: '第1年第1季度结束现金变动', timestamp: 10, cashChange: 5, newCash: 30, kind: 'summary' }),
+    ];
+    useEnterpriseStore.setState({ state: legacy, validationError: null });
+    store().loadGame({
+      id: 'legacy-partial', name: '残缺旧档', enterpriseName: '企业1', timestamp: 1,
+      resetCount: 0, version: 1, state: legacy, createdAt: 'x',
+    });
+
+    const row = (id: string) => store().state.operation.financialLogs.find(l => l.id === id)!;
+    expect(row('sum-1').cashChange).toBe(30 - 20);        // 链头：「初始现金」种子的 20M
+    expect(row('sum-2').cashChange).toBe(111);            // 缺 newCash → 原样保留，没被写成 NaN
+    expect(row('sum-3').cashChange).toBe(50 - 30);        // 链头跳过残缺行仍是 30（宁可跨两季，与 I2 同一取舍）
+    expect(row('sum-4').cashChange).toBe(80 - 50);
+    expect(row('sum-2').newCash).toBeUndefined();
+    expect(store().state.operation.financialLogs.every(l => Number.isFinite(l.cashChange))).toBe(true);
+  });
+
   // 真实跑法（不注资、不改数）才是不变量的主场：S-T3 的「未篡改必须审计为 ok」直接依赖这条
   it('真实 5 季推进（无任何注入）：Σflow === 现金，每季恰好一条 summary', () => {
     for (let i = 0; i < 5; i++) store().nextQuarter();

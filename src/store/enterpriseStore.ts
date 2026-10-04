@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger, SAVE_FORMAT_VERSION } from '../types/enterprise';
 import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE, RENT_BY_TYPE, annualRent } from '../utils/rules';
 import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS, generateYearOrders } from '../config/marketDemand';
+import { RESTATED_FULL_NET_FROM_VERSION, rebuildRestatedChain } from '../utils/restatement';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -213,7 +214,9 @@ const initialState: EnterpriseState = {
 
 // 旧版（v1/v2）存档迁移：补齐贷款台账、年度台账、年度化市场/ISO、生产线净值、厂房权属与租赁快照等新字段。
 // v1 的原料到货季度为 1~4 循环值（跨年即错），在途订单直接作废并提示。
-const migrateState = (s: EnterpriseState): EnterpriseState => {
+// fromVersion 是那一帧存档自己声明的格式版本：必填，且缺省/非法一律按最旧的 0 处理——
+// 宁可多做一次旧口径换算（换算本身对已与新口径一致的串是幂等的），也不能漏掉需要重建的旧档。
+const migrateState = (s: EnterpriseState, fromVersion: number | undefined): EnterpriseState => {
   const state: EnterpriseState = JSON.parse(JSON.stringify(s));
   state.isPaused = false;
 
@@ -253,14 +256,22 @@ const migrateState = (s: EnterpriseState): EnterpriseState => {
 
   // 财务日志 flow/summary（v4）：旧档无 kind，按产生位置特征兜底推断
   // （唯一 summary 是季度末重述串：不带 stepId 且描述含「季度结束现金变动」；其余一律 flow）
-  // 注意 v3→v4 的语义变更：v4 起 summary.cashChange 是「自上一条重述串以来的全部净变动」
-  // （含玩家主动交易），而 v3 存档里的旧值只是引擎自动项净额。旧档不做重算——
-  // §4.4 的审计对 v3 迁移来的帧只报状态、不作金额结论，也不强制玩家重开一局。
   state.operation?.financialLogs?.forEach(l => {
     if (!l.kind) {
       l.kind = (!l.stepId && (l.description || '').includes('季度结束现金变动')) ? 'summary' : 'flow';
     }
   });
+
+  // v3→v4 的语义变更：v4 起 summary.cashChange 是「自上一条重述串以来的全部净变动」（含玩家主动交易），
+  // 而 v3 存档里的旧值只是引擎自动项净额。这里**就地按 newCash 链重建**旧档的每一串，而不是留着不重建：
+  // saveGame 与 autoSaveGame 都无条件写 `version: SAVE_FORMAT_VERSION`，若只做文档说明，那么「载入 v3 档 →
+  // 继续玩 → 存档」的那一帧就是 v4 标签 + 旧口径串，审计里 §4.4 为 version < 4 准备的降级对它不适用，
+  // 于是又要在最常态的路径上假报一次 restated-log。串自带的 newCash 就是各季期末现金，链头取
+  // 「初始现金」种子的 cashChange，换算不需要任何额外信息（推导与审计共用 utils/restatement.ts）。
+  // 残缺到无法换算的串（如 v1/v2 那种没有 newCash 的）保持原样，由审计的 version < 4 分支兜住。
+  if ((fromVersion ?? 0) < RESTATED_FULL_NET_FROM_VERSION && state.operation?.financialLogs) {
+    rebuildRestatedChain(state.operation.financialLogs);
+  }
 
   // 厂房权属（v3）：旧档按槽位补齐——大厂房自有、小厂房租赁，租赁快照与权属一致
   state.production?.factories?.forEach(f => {
@@ -434,7 +445,7 @@ export const useEnterpriseStore = create<{
   // 加载游戏
   loadGame: (saveFile: SaveFile) => {
     const raw = JSON.parse(JSON.stringify(saveFile.state)) as EnterpriseState;
-    const migrated = migrateState(raw);
+    const migrated = migrateState(raw, saveFile.version);
     set({
       state: migrated,
       resetCount: saveFile.resetCount

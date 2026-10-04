@@ -3,10 +3,14 @@
 // 重述串落在 (新年,新季) 而错位；按数组顺序累计也不行，因为 quarterEndLog 在 allLogs 里排在
 // 年末结算日志之前。季度坐标改由整包给出（见 auditFrames / firstDivergingFrame）。
 import type { FinancialLogRecord, SaveFile } from '../types/enterprise';
+import { RESTATED_FULL_NET_FROM_VERSION, isSeedLog, restatedChainIsNewCaliber } from './restatement';
 
 export type AuditStatus = 'ok' | 'mismatch' | 'no-anchor';
 // 两种独立重建都不平时才落到 both；单侧失败可指名道姓
 export type AuditCause = 'flow-log' | 'restated-log' | 'both';
+
+// B 侧读数（restatedRebuilt）在这一帧里到底是什么身份，见 FrameAudit.restatementCaliber 的逐值说明。
+export type RestatementCaliber = 'v4' | 'legacy-converted' | 'legacy-unconverted';
 
 export interface FrameAudit {
   saveId: string;
@@ -18,28 +22,42 @@ export interface FrameAudit {
   actualCash: number;
   status: AuditStatus;
   cause: AuditCause | null;
+  // 审计用哪一侧当证据，是**存档版本 + 迁移换算结果**的函数。S-T5/S-T7/S-T8 直接展示它，
+  // 不要各自再去读 SaveFile.version 推一遍：一条规则写三处就是 §5.7 那类漂移的起点
+  // （SAVE_FORMAT_VERSION 单点定义的理由同款）。它只描述 B 侧读数的身份，不改变 status/cause 的判定。
+  //   'v4'                 version >= 4：串按新口径产生（v3 旧档也在载入时被 migrateState 重建过），
+  //                        A、B 双侧都参与判定 → restatedRebuilt 可以当证据用。
+  //   'legacy-converted'   version < 4 而整串已经是新口径（老档那些季度本就没有玩家手操，或这帧的 state
+  //                        已经过换算）：restatedRebuilt 的读数可信，但判定仍只看 A——version 是存档时写死
+  //                        的标签，不能靠内容反推去指控旧档（那正是评审 C1 的假阳性形态）。
+  //   'legacy-unconverted' version < 4 且串是旧口径、或残缺到换不出（缺种子 / summary 无有限 newCash /
+  //                        连 kind 都还没被认出来的原始帧）：restatedRebuilt 只是展示读数，
+  //                        UI 必须附「旧口径链，不作金额结论」，不能把它印成篡改证据。
+  restatementCaliber: RestatementCaliber;
 }
 
-// summary.cashChange 从这一刻起才是「自上一条重述串以来的全部净变动」（规格 §4.4 第四次更正）。
-// 这是**口径变更发生的版本**，不是当前的 SAVE_FORMAT_VERSION：版本再往上加也不能把 v4 帧重新当成旧档，
-// 故刻意不引用那个常量。
-const RESTATED_FULL_NET_FROM_VERSION = 4;
-
-const SEED_DESCRIPTION = '初始现金';
-const isSeed = (l: FinancialLogRecord) => l.description === SEED_DESCRIPTION;
 const sumBy = (logs: FinancialLogRecord[], pick: (l: FinancialLogRecord) => boolean) =>
   logs.filter(pick).reduce((t, l) => t + l.cashChange, 0);
 
 export function auditFrame(save: SaveFile): FrameAudit {
   const logs = save.state.operation?.financialLogs ?? [];
+  // 旧档（version < 4）的重述串是旧口径（只累加引擎自动项、漏掉玩家主动交易）。
+  // 载入时 migrateState 会把它按 newCash 链重建成新口径，但**存进包里的这一帧字节没被改过**，
+  // 所以审计旧档这一帧时 B 仍只作展示读数、绝不参与判定：判据降级为单侧（只看 A），
+  // 否则每个健康的老档都会被写成一条「重述串被篡改」的伪证（S-T5/S-T7/S-T8 因此无需各自再补版本分支）。
+  const legacyRestated = (save.version ?? 0) < RESTATED_FULL_NET_FROM_VERSION;
+  const restatementCaliber: RestatementCaliber = !legacyRestated
+    ? 'v4'
+    : restatedChainIsNewCaliber(logs) ? 'legacy-converted' : 'legacy-unconverted';
   const base = {
     saveId: save.id,
     saveName: save.name,
     year: save.state.operation?.currentYear ?? 0,
     quarter: save.state.operation?.currentQuarter ?? 0,
     actualCash: save.state.finance.cash,
+    restatementCaliber,
   };
-  const seeds = logs.filter((l) => l.kind === 'flow' && isSeed(l));
+  const seeds = logs.filter((l) => l.kind === 'flow' && isSeedLog(l));
   if (seeds.length === 0) {
     // 链条被截断时报「起算链不完整」而不是「账实不符」；用 null 不用 NaN（规格 §4.4）：
     // NaN 过 JSON.stringify 会变成 null，看着一样，但在内存里参与求和/比较会静默传染 NaN
@@ -57,12 +75,9 @@ export function auditFrame(save: SaveFile): FrameAudit {
   const summaries = logs.filter((l) => l.kind === 'summary');
   const latestRestatedAt = summaries.reduce((t, l) => Math.max(t, l.timestamp), 0);
   const restatedSum = summaries.reduce((t, l) => t + l.cashChange, 0);
-  const tailFlows = sumBy(logs, (l) => l.kind === 'flow' && !isSeed(l) && l.timestamp > latestRestatedAt);
+  const tailFlows = sumBy(logs, (l) => l.kind === 'flow' && !isSeedLog(l) && l.timestamp > latestRestatedAt);
   const restatedRebuilt = seedCash + restatedSum + tailFlows;
-  // 旧档（version < 4）的重述串是旧口径（只累加引擎自动项、漏掉玩家主动交易），迁移不重写这些值，
-  // 于是 B 对这种帧必然不平。B 在这里只作展示读数，绝不参与判定：判据降级为单侧（只看 A），
-  // 否则每个健康的老档都会被写成一条「重述串被篡改」的伪证（S-T5/S-T7/S-T8 因此无需各自再补版本分支）。
-  const legacyRestated = (save.version ?? 0) < RESTATED_FULL_NET_FROM_VERSION;
+  // 判据降级（B 不参与判定）的由来见函数开头 legacyRestated 那段；读数的身份见 FrameAudit.restatementCaliber。
   const aOk = flowRebuilt === base.actualCash;
   const bOk = restatedRebuilt === base.actualCash;
 

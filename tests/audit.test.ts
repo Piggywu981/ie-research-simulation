@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
 import { auditFrame, auditFrames, auditSummary, CAUSE_TEXT, firstDivergingFrame } from '../src/utils/audit';
-import { SAVE_FORMAT_VERSION, type SaveFile } from '../src/types/enterprise';
+import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile } from '../src/types/enterprise';
 
 const store = () => useEnterpriseStore.getState();
 
@@ -13,6 +13,44 @@ const frame = (id = 's1', mutate?: (s: ReturnType<typeof createFreshState>) => v
   const state = createFreshState();
   mutate?.(state);
   return { id, name: `帧${id}`, enterpriseName: '企业1', timestamp: 1, resetCount: 0, version: SAVE_FORMAT_VERSION, state, createdAt: 'x' };
+};
+
+// 造一份货真价实的 v3 存档：真引擎跑两季、其间两笔玩家手操，然后把它压回 v3 的形状——
+// 重述串只记引擎自动项（把当季那笔手操从覆盖它的串里减掉），并删掉 v4 才有的 kind 字段
+// （旧档没有 kind，靠 migrateState 按「不带 stepId 且描述含季度结束现金变动」兜底认出来）。
+// 调用方需自行处于 vi.useFakeTimers() 中：每步之间推进假时钟，保证 timestamp 严格递增
+// （B 式尾项按「晚于最新一条串」判，同毫秒会漏计，见下方季中存档那例）。
+const buildV3LegacyArchive = (): SaveFile => {
+  store().registerOtherCashFlow('旧档注资', 180);   // 第1年第1季
+  expect(store().validationError).toBeNull();
+  vi.advanceTimersByTime(10);
+  store().nextQuarter();                            // → 第2季：串#1 的新口径应当含这笔 +180
+  expect(store().validationError).toBeNull();
+  vi.advanceTimersByTime(10);
+  store().registerOtherCashFlow('旧档支出', -30);    // 第2季
+  expect(store().validationError).toBeNull();
+  vi.advanceTimersByTime(10);
+  store().nextQuarter();                            // → 第3季：串#2 的新口径应当含这笔 −30
+  expect(store().validationError).toBeNull();
+
+  const legacy = JSON.parse(JSON.stringify(store().state)) as ReturnType<typeof createFreshState>;
+  const manual = legacy.operation.financialLogs.filter(l => l.operator === '企业1管理者');
+  // 数组是「新的在前」，故按 timestamp 定序后比对，确认这两笔手操真的都在账上且金额没被别处稀释
+  expect([...manual].sort((a, b) => a.timestamp - b.timestamp).map(l => l.cashChange)).toEqual([180, -30]);
+  for (const flow of manual) {
+    const covered = legacy.operation.financialLogs
+      .filter(l => l.kind === 'summary' && l.timestamp >= flow.timestamp)
+      .sort((a, b) => a.timestamp - b.timestamp);
+    expect(covered.length).toBeGreaterThan(0);       // 这笔手操确实落在某条重述串的窗口里
+    covered[0].cashChange -= flow.cashChange;        // 旧口径：引擎自动项里没有它
+  }
+  for (const l of legacy.operation.financialLogs) delete (l as Partial<FinancialLogRecord>).kind;
+  vi.advanceTimersByTime(10);                        // 冲掉上面两次推进排下的自动存档定时器
+
+  return {
+    id: 'v3-legacy', name: 'v3 旧档', enterpriseName: '企业1', timestamp: 1,
+    resetCount: 0, version: 3, state: legacy, createdAt: 'x',
+  };
 };
 
 describe('账实重演算（双重建）', () => {
@@ -173,6 +211,67 @@ describe('账实重演算（双重建）', () => {
     expect(r.cause).toBe('flow-log');
     expect(r.flowRebuilt).toBe(r.actualCash + 7);
   });
+
+  // 评审 round-1 顾虑 2（控制器裁为 Item 1）：上一例的保护只在 version < 4 时生效，而
+  // saveGame/autoSaveGame 两处都无条件写 `version: SAVE_FORMAT_VERSION`，
+  // 于是「载入 v3 旧档 → 继续玩 → 存档」出来的那一帧自认 v4：降级不适用，串却还是旧口径，
+  // B 侧必然少算掉历史手操 → 又是一次 restated-log 伪证，而继续老档恰恰是最常态的路径。
+  // 修法不在审计里而在 migrateState：旧档载入时就把串按 newCash 链换算成新口径，本例即钉这条路
+  // （改动前实测：status mismatch、cause restated-log、flowRebuilt 211 = actualCash 211 而 restatedRebuilt 只有 61）。
+  it('载入 v3 旧档后继续运营再存档：那一帧（标着 v4）审计必须 ok，不再假报 restated-log', () => {
+    vi.useFakeTimers();
+    try {
+      // ① 载入旧档：migrateState 认回 kind，并把旧口径串重建成新口径
+      store().loadGame(buildV3LegacyArchive());
+      const loadedSummaries = store().state.operation.financialLogs.filter(l => l.kind === 'summary');
+      expect(loadedSummaries).toHaveLength(2);           // kind 兜底认出来了（否则本例根本没在比重述串）
+
+      // ② 接着玩：一笔短贷 + 一笔手操，推进一季，再手动存档
+      store().applyShortTermLoan();                      // 第3季是短贷放贷期（lendingPeriods [1,6]）
+      expect(store().validationError).toBeNull();
+      store().registerOtherCashFlow('继续运营注资', 25);
+      expect(store().validationError).toBeNull();
+      vi.advanceTimersByTime(10);
+      store().nextQuarter();
+      expect(store().validationError).toBeNull();
+      vi.advanceTimersByTime(10);
+      store().saveGame();
+
+      // ③ 那一帧标着 v4，两侧重建必须都等于现金
+      const saved = store().saveFiles.find(s => !s.id.startsWith('save-auto-'));
+      expect(saved).toBeDefined();
+      expect(saved!.version).toBe(SAVE_FORMAT_VERSION);  // 重存把旧档抬成了 v4——正是绕过降级的地方
+      const r = auditFrame(saved!);
+      expect(r.status).toBe('ok');
+      expect(r.cause).toBeNull();
+      expect(r.flowRebuilt).toBe(r.actualCash);
+      expect(r.restatedRebuilt).toBe(r.actualCash);
+      expect(r.restatementCaliber).toBe('v4');           // 换算过来的串与原生 v4 帧无从区分，也不需要区分
+
+      // ④ 自动存档那一路（nextQuarter 每季都会排下它）同样抬版本，读的是同一份已换算的内存状态
+      store().autoSaveGame();
+      const auto = store().saveFiles.find(s => s.id.startsWith('save-auto-'));
+      expect(auto).toBeDefined();
+      expect(auto!.version).toBe(SAVE_FORMAT_VERSION);
+      const ra = auditFrame(auto!);
+      expect(ra.status).toBe('ok');
+      expect(ra.restatedRebuilt).toBe(ra.actualCash);
+      expect(ra.restatementCaliber).toBe('v4');
+
+      // ⑤ 换算的现场：落盘每一串都满足新口径的定义式（期末现金 − 上一条串的期末现金）
+      const chain = saved!.state.operation.financialLogs
+        .filter(l => l.kind === 'summary')
+        .sort((a, b) => a.timestamp - b.timestamp);
+      expect(chain).toHaveLength(3);                     // 旧档换算来的两条 + 继续玩产生的这一条
+      let chainHead = 20;                                // 「初始现金」种子的 cashChange（开局 20M）
+      for (const row of chain) {
+        expect(row.cashChange).toBe(row.newCash - chainHead);
+        chainHead = row.newCash;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('包内定位', () => {
@@ -217,6 +316,60 @@ describe('包内定位', () => {
     expect(results[0].flowRebuilt).toBeNull();                         // NaN 会让下游求和/比较静默失真
     expect(results[0].restatedRebuilt).toBeNull();
     expect(auditSummary(results)).toEqual({ total: 2, ok: 1, mismatch: 0, noAnchor: 1 });
+  });
+});
+
+// 评审 round-1 顾虑 3（控制器裁为 Item 2）：FrameAudit 里没有版本事实，S-T7 的预览与 S-T8 的报告
+// 就得各自去读 SaveFile.version 补那行「旧口径链，不作金额结论」的文案——一条规则写三处，
+// 正是本仓为 SAVE_FORMAT_VERSION 单点定义付过一次账的漂移形态。现在口径由审计器一次性给出。
+describe('B 侧口径标记（restatementCaliber）', () => {
+  it('version >= 4：报 v4，B 侧是参与判定的证据', () => {
+    store().registerOtherCashFlow('测试注资', 180);
+    store().nextQuarter();
+    const r = auditFrame({ ...frame('v4'), state: store().state });
+    expect(r.restatementCaliber).toBe('v4');
+    expect(r.status).toBe('ok');
+    expect(r.restatedRebuilt).toBe(r.actualCash);
+  });
+
+  // 包里存着的原始 v3 帧（没有 kind、串是旧口径）与载入后仍换不出来的残缺串，都归 legacy-unconverted：
+  // 读数只能展示，不能被印成篡改证据。
+  it('version < 4 且串是旧口径（含包里的原始 v3 帧）：报 legacy-unconverted', () => {
+    vi.useFakeTimers();
+    try {
+      const v3 = buildV3LegacyArchive();
+      // 未经 migrateState 的原始帧：连 kind 都没有，认不出重述串 → 保守报「未换算」
+      expect(v3.state.operation.financialLogs.some(l => l.kind === 'summary')).toBe(false);
+      expect(auditFrame(v3).restatementCaliber).toBe('legacy-unconverted');
+
+      // 同一批读数带上 version 3 标签、却仍与 newCash 链矛盾的那一帧（把首条还原成旧口径）
+      const legacy = JSON.parse(JSON.stringify(store().state)) as ReturnType<typeof createFreshState>;
+      const summaries = legacy.operation.financialLogs.filter(l => l.kind === 'summary');
+      summaries[summaries.length - 1].cashChange -= 180;   // 旧口径：引擎自动项里没有那笔注资
+      const r = auditFrame({ ...v3, state: legacy });
+      expect(r.restatementCaliber).toBe('legacy-unconverted');
+      expect(r.status).toBe('ok');                          // 判定仍只看 A（降级没被口径字段动摇）
+      expect(r.restatedRebuilt).toBe(r.actualCash - 180);   // 读数是旧口径的，所以才要这个标记
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // migrateState 换算过来、但仍带 version 3 标签的那一帧（S-T6/S-T7 导入旧包时正是这个形状）：
+  // 串已经是新口径了，读数可信；判定却仍只看 A——不能靠内容反推去指控旧档（评审 C1 的假阳性形态）。
+  it('version < 4 而整串已是新口径（旧档换算后）：报 legacy-converted', () => {
+    vi.useFakeTimers();
+    try {
+      const v3 = buildV3LegacyArchive();
+      store().loadGame(v3);                                 // 换算发生在这里
+      const r = auditFrame({ ...v3, state: store().state });
+      expect(r.restatementCaliber).toBe('legacy-converted');
+      expect(r.status).toBe('ok');
+      expect(r.restatedRebuilt).toBe(r.actualCash);         // 换算后的串不再少算
+      expect(r.flowRebuilt).toBe(r.actualCash);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
