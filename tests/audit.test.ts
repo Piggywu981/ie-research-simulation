@@ -599,7 +599,7 @@ describe('旧档的「不符」与篡改分开说', () => {
       const r4 = auditFrame({ ...frame3, version: 4 });
       expect(r4.status).toBe('mismatch');
       expect(r4.restatementCaliber).toBe('v4');
-      expect(CALIBER_TEXT[r4.restatementCaliber]).toContain('可作金额证据');
+      expect(CALIBER_TEXT[r4.restatementCaliber]).toContain('按 v4 口径判定');
       const summary4 = auditSummary([r4]);
       expect(summary4.mismatch).toBe(1);
       expect(summary4.legacyMismatch).toBe(0);                // ← 这条配对才让该统计量有意义，不是装饰

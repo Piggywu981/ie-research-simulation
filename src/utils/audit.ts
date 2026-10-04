@@ -151,7 +151,7 @@ export const CAUSE_TEXT: Record<AuditCause, string> = {
 // 而 v3 时代本就可能有过没写进流水的现金变动，那种天然不平印出来与 v4 帧上的篡改判定**逐字同一句**
 // CAUSE_TEXT['flow-log']。只靠「旧口径链，不作金额结论」挡不住它——那句说的是 B 读数的身份，不是 A 判定的含义。
 export const CALIBER_TEXT: Record<RestatementCaliber, string> = {
-  'v4': '重述串为新口径，可作金额证据',
+  'v4': '本帧按 v4 口径判定（依版本标签推定，未逐串核实）',
   'legacy-converted': '旧档（version<4）：重述串已换算，判定只依据流水',
   'legacy-unconverted': '旧档（version<4）：判定只依据流水；该版本可能存在未记账的现金变动，"不符"不等于篡改',
 };

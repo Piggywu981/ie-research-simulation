@@ -421,7 +421,7 @@ describe('包内定位', () => {
     expect(results.map(r => r.saveId)).toEqual(['f1', 'f2', 'f3']);  // 输入乱序也要按时间升序返回
     expect(firstDivergingFrame(results)?.saveId).toBe('f3');
     expect(firstDivergingFrame(results)?.quarter).toBe(1);
-    expect(auditSummary(results)).toEqual({ total: 3, ok: 2, mismatch: 1, noAnchor: 0 });
+    expect(auditSummary(results)).toEqual({ total: 3, ok: 2, mismatch: 1, noAnchor: 0, legacyMismatch: 0 });
   });
 
   it('全部通过时 firstDivergingFrame 返回 null', () => {
@@ -518,6 +518,9 @@ export const auditSummary = (results: FrameAudit[]) => ({
   ok: results.filter((r) => r.status === 'ok').length,
   mismatch: results.filter((r) => r.status === 'mismatch').length,
   noAnchor: results.filter((r) => r.status === 'no-anchor').length,
+  // mismatch 的子集：旧档（version<4，即 restatementCaliber !== 'v4'）的那部分。老档的「不符」可能只是
+  // v3 时代没落账的现金变动，与新档上那句「不符」（当篡改看）不是一回事，所以由审计给数，不由消费方读 version 现算。
+  legacyMismatch: results.filter((r) => r.status === 'mismatch' && r.restatementCaliber !== 'v4').length,
 });
 
 // S-T7 预览与 S-T8 报告共用同一份措辞，避免两处各写一遍
@@ -1100,7 +1103,7 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
 // src/utils/audit.ts 已有（Task 3）：与 RestatementCaliber 三值一一对应，后两条须言明
 // "旧档可能存在未记账的现金变动，不符不等于篡改"（评审 round-3 new finding #1）。
 export const CALIBER_TEXT: Record<RestatementCaliber, string> = {
-  'v4': '重述串为新口径，可作金额证据',
+  'v4': '本帧按 v4 口径判定（依版本标签推定，未逐串核实）',
   'legacy-converted': '旧档（version<4）：重述串已换算，判定只依据流水',
   'legacy-unconverted': '旧档（version<4）：判定只依据流水；该版本可能存在未记账的现金变动，"不符"不等于篡改',
 };
@@ -1143,7 +1146,7 @@ import type { FrameAudit } from '../utils/audit';
       const mismatches = results.filter(r => r.status !== 'ok')
         .map(r => r.status === 'no-anchor'
           // no-anchor 不附口径文案：那一档说的是"B 侧读数的身份"，而这一帧两侧都没算成，
-          // 附上「重述串为新口径，可作金额证据」会变成自相矛盾的印面（评审 round-3 new finding #3）
+          // 附上「本帧按 v4 口径判定…」会变成自相矛盾的印面（评审 round-3 new finding #3）
           ? `${r.saveName}：起算链不完整（缺期初现金种子），本帧现金 ${r.actualCash}M`
           : `${r.saveName}（第${r.year}年第${r.quarter}季）：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），本帧现金 ${r.actualCash}M；${CALIBER_TEXT[r.restatementCaliber]}`);
       // 包内定位：第一处不平的帧才是"分歧起点"，其余帧的不平是它的下游后果（Task 3 定的判据）
@@ -1219,7 +1222,7 @@ import { buildAuditReport } from '../src/utils/audit';
     expect(text).toContain('帧s1');
     // 新档帧：统计行必须把"旧档判定"单列出来（评审 round-3 new finding #1 的印面验收）
     expect(text).toContain('其中旧档 version<4 的判定 0 条');
-    expect(text).toContain('重述串为新口径');
+    expect(text).toContain('本帧按 v4 口径判定');
     expect(JSON.parse(json).boundary).toBe(boundary);
     expect(JSON.parse(json).packageDigest).toBe('sha256:deadbeef00001111');
   });
