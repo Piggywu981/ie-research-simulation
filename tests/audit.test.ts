@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
-import { auditFrame, auditFrames, auditSummary, CAUSE_TEXT, firstDivergingFrame } from '../src/utils/audit';
+import { auditFrame, auditFrames, auditSummary, CAUSE_TEXT, firstDivergingFrame, type FrameAudit } from '../src/utils/audit';
+import { rebuildRestatedChain } from '../src/utils/restatement';
 import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile } from '../src/types/enterprise';
 
 const store = () => useEnterpriseStore.getState();
@@ -14,6 +15,13 @@ const frame = (id = 's1', mutate?: (s: ReturnType<typeof createFreshState>) => v
   mutate?.(state);
   return { id, name: `帧${id}`, enterpriseName: '企业1', timestamp: 1, resetCount: 0, version: SAVE_FORMAT_VERSION, state, createdAt: 'x' };
 };
+
+// 一条普通流水（显式 kind: 'flow'）：供「往帧里塞一条脏数据」那几例用，金额由调用方给，
+// 不硬编码期初现金之类常数——种子那条本来就在 createFreshState() 里。
+const mkFlow = (over: Partial<FinancialLogRecord>): FinancialLogRecord => ({
+  id: `flow-${Math.random()}`, year: 1, quarter: 1, timestamp: 5,
+  description: '手操', cashChange: 0, newCash: 0, operator: '企业1管理者', kind: 'flow', ...over,
+});
 
 // 造一份货真价实的 v3 存档：真引擎跑两季、其间两笔玩家手操，然后把它压回 v3 的形状——
 // 重述串只记引擎自动项（把当季那笔手操从覆盖它的串里减掉），并删掉 v4 才有的 kind 字段
@@ -272,6 +280,52 @@ describe('账实重演算（双重建）', () => {
       vi.useRealTimers();
     }
   });
+
+  // 评审 round-3 N2：cashChange 被手改成 1e999 时 JSON.parse 直接给出 Infinity，两个重建式加出
+  // Infinity（或 NaN）后过 JSON.stringify 又变成 null——内存里的读数却是非有限值，既会静默传染任何
+  // 后续求和/比较，也让 S-T8 的报告给一帧真有数字的存档打出 null。规格 §4.4 的「null 而非 NaN」
+  // 在这里落地成：读数出门前把非有限值一律折成 null，判定语义不变（非有限帧仍然是不平，不是无从起算）。
+  it('读数不为非有限值：1e999 注入后两个重建都是 null，JSON 往返后仍是 null', () => {
+    const bogus = (cashChange: unknown) => frame('s1', (s) => {
+      // 类型刻意收 unknown：玩家手改存档时想写什么写什么，这里要的就是「非数值也进得来」
+      s.operation.financialLogs.push(mkFlow({ id: 'bogus', description: '手改出来的天文数字', cashChange: cashChange as number }));
+    });
+    for (const [label, r] of [
+      ['Infinity', auditFrame(bogus(1e999))],        // JSON.parse('1e999') 就是 Infinity
+      ['NaN', auditFrame(bogus('1'))],               // 手改成字符串同理加出 NaN
+    ] as const) {
+      expect(r.status, label).toBe('mismatch');
+      expect(r.cause, label).not.toBeNull();
+      expect(r.flowRebuilt, label).toBeNull();                // 不是 Infinity、不是 NaN、也不是数字
+      expect(r.restatedRebuilt, label).toBeNull();
+      // 内存里就该是 null：序列化往返后仍是 null，报告与面板的读数因此同真值
+      const roundTrip = JSON.parse(JSON.stringify(r)) as FrameAudit;
+      expect(roundTrip.status, label).toBe('mismatch');
+      expect(roundTrip.flowRebuilt, label).toBeNull();
+      expect(roundTrip.restatedRebuilt, label).toBeNull();
+    }
+  });
+
+  // 评审 round-3 N3：上一轮 C1 修成「帧里没有重述串时 B ≡ A」，靠的是 latestRestatedAt 取 0 让尾项谓词
+  // `timestamp > 0` 吞下全部非种子流水。可这个 0 同时是「没有尾项」的哨兵：时间戳被手改成 0 或负数的那些
+  // 流水会掉出 B ⇒ B ≠ A ⇒ 又假报 restated-log——C1 的形态从时间戳这里漏了回来。
+  // 种子改成 -Infinity 后对真实 Date.now() 时间戳行为完全不变。
+  it('零重述串 + 时间戳为 0 或负数：B 仍等价于 A，不得假报 restated-log', () => {
+    store().registerOtherCashFlow('测试注资', 180);
+    expect(store().validationError).toBeNull();
+    for (const ts of [0, -5]) {
+      const state = JSON.parse(JSON.stringify(store().state)) as ReturnType<typeof createFreshState>;
+      state.operation.financialLogs.forEach(l => { l.timestamp = ts; });
+      expect(state.operation.financialLogs.filter(l => l.kind === 'summary')).toHaveLength(0);
+
+      const r = auditFrame({ ...frame(`ts${ts}`), state });
+      expect(r.status).toBe('ok');                            // 这一帧没有重述串可篡改
+      expect(r.cause).toBeNull();
+      expect(r.actualCash).toBe(200);
+      expect(r.flowRebuilt).toBe(200);
+      expect(r.restatedRebuilt).toBe(r.flowRebuilt);          // 尾项吞下全部非种子流水，B ≡ A
+    }
+  });
 });
 
 describe('包内定位', () => {
@@ -367,6 +421,94 @@ describe('B 侧口径标记（restatementCaliber）', () => {
       expect(r.status).toBe('ok');
       expect(r.restatedRebuilt).toBe(r.actualCash);         // 换算后的串不再少算
       expect(r.flowRebuilt).toBe(r.actualCash);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// 评审 round-3 N1：真正的 v3 存档里**根本没有 kind 字段**，它是 migrateState 在 loadGame 时才推断出来的。
+// 而 S-T5 导出的是 getSaveFiles() 原样列表（含未迁移的 v3 帧）、S-T7 审计的是 pkg.saves 原样帧，
+// 所以「按 kind 分类」这件事必须对没有 kind 的原始帧也成立，否则整个旧档包每一帧都印成「起算链不完整」，
+// firstDivergingFrame 还会把最早那一帧指成问题帧。推断规则的单点是 utils/restatement.ts 的 kindOfLog。
+describe('原始 v3 帧（日志没有 kind 字段）', () => {
+  it('未经迁移的 v3 帧：按同一条规则认出 flow/summary，走 A-only 判定为 ok', () => {
+    vi.useFakeTimers();
+    try {
+      const v3 = buildV3LegacyArchive();
+      // 夹具造的确实是「没有 kind」的原始形状（否则本例什么都没测）
+      expect(v3.state.operation.financialLogs.some(l => l.kind === undefined)).toBe(true);
+
+      const r = auditFrame(v3);
+      expect(r.status).toBe('ok');                  // 此前是 no-anchor：种子那条因没有 kind 而认不出来
+      expect(r.cause).toBeNull();
+      expect(r.flowRebuilt).toBe(r.actualCash);     // A 判定真的跑了（不是两侧都为 null）
+      expect(r.restatedRebuilt).not.toBeNull();     // B 仍是有限读数
+      expect(r.restatedRebuilt! > 0).toBe(true);
+      // 旧口径链：B 比 A 少掉的恰是夹具减掉的那两笔手操（+180 与 −30，净 150）
+      expect(r.restatedRebuilt).toBe(r.actualCash - 150);
+      expect(r.restatementCaliber).toBe('legacy-unconverted');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('未经迁移的 v3 帧 + 篡改一条流水：仍报 mismatch / flow-log（A 判定没被 no-anchor 吞掉）', () => {
+    vi.useFakeTimers();
+    try {
+      const v3 = buildV3LegacyArchive();
+      const flow = v3.state.operation.financialLogs.find(l => l.description.includes('旧档注资'))!;
+      expect(flow).toBeDefined();                   // 找不到的话本例根本没篡改任何一条流水
+      expect(flow.stepId).toBeTruthy();             // 带 stepId ⇒ 按推断规则它是 flow
+      flow.cashChange += 7;
+
+      const r = auditFrame(v3);
+      expect(r.status).toBe('mismatch');
+      expect(r.cause).toBe('flow-log');             // 降级分支：旧档不用旧口径的 B 去凑证据
+      expect(r.flowRebuilt).toBe(r.actualCash + 7);
+      expect(r.restatedRebuilt).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('未经迁移的 v3 帧但串已是新口径：换算侧也认得没有 kind 的行', () => {
+    vi.useFakeTimers();
+    try {
+      const v3 = buildV3LegacyArchive();
+      // 不经 loadGame，直接对**没有 kind** 的原始日志跑重建：deriveRestatedChain 只认得出有 kind 的行时，
+      // 这里一步都换不动（返回 false），口径只能报 legacy-unconverted
+      expect(rebuildRestatedChain(v3.state.operation.financialLogs)).toBe(true);
+
+      const r = auditFrame(v3);
+      expect(r.restatementCaliber).toBe('legacy-converted');   // ← 与上面那条 legacy-unconverted 的唯一区别
+      expect(r.status).toBe('ok');
+      expect(r.restatedRebuilt).toBe(r.actualCash);            // 换算后 B 不再少算那 150
+      expect(r.restatedRebuilt).toBe(r.flowRebuilt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('推断规则同源：迁移前那一帧与迁移后那一帧的 status 一致，且 kind 仍然落进存档', () => {
+    vi.useFakeTimers();
+    try {
+      const v3 = buildV3LegacyArchive();
+      // loadGame 内部会深拷贝再迁移，这里另存一份未迁移的原件（S-T5/S-T7 审计的就是那种形状）
+      const preMigration = JSON.parse(JSON.stringify(v3)) as SaveFile;
+
+      store().loadGame(v3);
+      const migrated: SaveFile = { ...v3, state: store().state };
+
+      // 兜底回填还在（字段必须落进存档），且回填的就是同一条规则
+      expect(migrated.state.operation.financialLogs.every(l => l.kind === 'flow' || l.kind === 'summary')).toBe(true);
+      expect(migrated.state.operation.financialLogs.filter(l => l.kind === 'summary')).toHaveLength(2);
+
+      const before = auditFrame(preMigration);
+      const after = auditFrame(migrated);
+      expect(before.status).toBe('ok');
+      expect(after.status).toBe(before.status);     // 同一份账，迁移前后判定不能变
+      expect(after.cause).toBe(before.cause);
     } finally {
       vi.useRealTimers();
     }

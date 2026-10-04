@@ -3,7 +3,7 @@
 // 重述串落在 (新年,新季) 而错位；按数组顺序累计也不行，因为 quarterEndLog 在 allLogs 里排在
 // 年末结算日志之前。季度坐标改由整包给出（见 auditFrames / firstDivergingFrame）。
 import type { FinancialLogRecord, SaveFile } from '../types/enterprise';
-import { RESTATED_FULL_NET_FROM_VERSION, isSeedLog, restatedChainIsNewCaliber } from './restatement';
+import { RESTATED_FULL_NET_FROM_VERSION, isSeedLog, kindOfLog, restatedChainIsNewCaliber } from './restatement';
 
 export type AuditStatus = 'ok' | 'mismatch' | 'no-anchor';
 // 两种独立重建都不平时才落到 both；单侧失败可指名道姓
@@ -17,27 +17,38 @@ export interface FrameAudit {
   saveName: string;
   year: number;
   quarter: number;
-  flowRebuilt: number | null;      // A：Σ 全部 flow（含期初种子）
-  restatedRebuilt: number | null;  // B：期初种子 + Σ 重述串 + 尾随流水（version < 4 的旧档只作展示，不参与判定）
+  flowRebuilt: number | null;      // A：Σ 全部 flow（含期初种子）；null = 无从起算或读数非有限
+  restatedRebuilt: number | null;  // B：期初种子 + Σ 重述串 + 尾随流水；null 同上（version < 4 的旧档只作展示，不参与判定）
   actualCash: number;
   status: AuditStatus;
   cause: AuditCause | null;
   // 审计用哪一侧当证据，是**存档版本 + 迁移换算结果**的函数。S-T5/S-T7/S-T8 直接展示它，
   // 不要各自再去读 SaveFile.version 推一遍：一条规则写三处就是 §5.7 那类漂移的起点
   // （SAVE_FORMAT_VERSION 单点定义的理由同款）。它只描述 B 侧读数的身份，不改变 status/cause 的判定。
-  //   'v4'                 version >= 4：串按新口径产生（v3 旧档也在载入时被 migrateState 重建过），
+  //   'v4'                 version >= 4：串**应当**按新口径产生（v3 旧档也在载入时被 migrateState 重建过），
   //                        A、B 双侧都参与判定 → restatedRebuilt 可以当证据用。
+  //                        注意这一档只跟着存档的版本标签走，它分不清「按新口径产生」与「kind/口径修复落地
+  //                        之前就写下、带着 v4 标签却是旧口径串」那一类（旧版 migrateState 不换算、之后又存了档）：
+  //                        文案要说「按 v4 口径判定」，不能说成「已核实串确为新口径」。
   //   'legacy-converted'   version < 4 而整串已经是新口径（老档那些季度本就没有玩家手操，或这帧的 state
   //                        已经过换算）：restatedRebuilt 的读数可信，但判定仍只看 A——version 是存档时写死
   //                        的标签，不能靠内容反推去指控旧档（那正是评审 C1 的假阳性形态）。
-  //   'legacy-unconverted' version < 4 且串是旧口径、或残缺到换不出（缺种子 / summary 无有限 newCash /
-  //                        连 kind 都还没被认出来的原始帧）：restatedRebuilt 只是展示读数，
-  //                        UI 必须附「旧口径链，不作金额结论」，不能把它印成篡改证据。
+  //   'legacy-unconverted' version < 4 且串是旧口径、或残缺到换不出（缺种子 / summary 无有限 newCash）：
+  //                        restatedRebuilt 只是展示读数，UI 必须附「旧口径链，不作金额结论」，
+  //                        不能把它印成篡改证据。日志没有 kind 的原始帧也走这条（分类见 restatement.ts 的 kindOfLog），
+  //                        但它照样跑 A 侧判定，不会被降级成「无从起算」。
   restatementCaliber: RestatementCaliber;
 }
 
 const sumBy = (logs: FinancialLogRecord[], pick: (l: FinancialLogRecord) => boolean) =>
   logs.filter(pick).reduce((t, l) => t + l.cashChange, 0);
+
+// 非有限读数出门前折成 null（规格 §4.4「null 而非 NaN」的另一半）：`1e999` 过 JSON.parse 就是 Infinity、
+// 非数值字段过加法就是 NaN，两者过 JSON.stringify 都会变成 null——内存里留着它们会静默传染任何后续
+// 求和/比较，还会让 S-T8 的报告给一帧真有数字的存档打出 null。判定仍比原始值（见下面 aOk/bOk），
+// 故这条不改任何状态语义：非有限读数与 finite 的帧末现金本就不相等 → 照旧是 mismatch，
+// 只是不把非有限值带出去；帧末现金自己被改成 Infinity 的那种平法不在本条守卫的半径内。
+const finiteOr = (n: number): number | null => (Number.isFinite(n) ? n : null);
 
 export function auditFrame(save: SaveFile): FrameAudit {
   const logs = save.state.operation?.financialLogs ?? [];
@@ -57,7 +68,11 @@ export function auditFrame(save: SaveFile): FrameAudit {
     actualCash: save.state.finance.cash,
     restatementCaliber,
   };
-  const seeds = logs.filter((l) => l.kind === 'flow' && isSeedLog(l));
+  // 分类一律走 restatement.ts 的 kindOfLog：显式 kind 优先，没有 kind 的原始旧档按产生位置特征兜底
+  // （与 migrateState 的回填同源同一条谓词）。就地读 `l.kind` 的写法只对经过 loadGame 的帧成立，
+  // 而未迁移的原始 v3 帧（S-T5 导出的 getSaveFiles() 列表、S-T7 审计的 pkg.saves）会连种子都认不出来、
+  // 整帧塌成 no-anchor —— 一个健康旧档包就此每帧印「起算链不完整」。
+  const seeds = logs.filter((l) => kindOfLog(l) === 'flow' && isSeedLog(l));
   if (seeds.length === 0) {
     // 链条被截断时报「起算链不完整」而不是「账实不符」；用 null 不用 NaN（规格 §4.4）：
     // NaN 过 JSON.stringify 会变成 null，看着一样，但在内存里参与求和/比较会静默传染 NaN
@@ -65,29 +80,34 @@ export function auditFrame(save: SaveFile): FrameAudit {
   }
 
   const seedCash = sumBy(seeds, () => true);
-  const flowRebuilt = sumBy(logs, (l) => l.kind === 'flow');
+  const flowRebuilt = sumBy(logs, (l) => kindOfLog(l) === 'flow');
   // B 式：期初种子 + Σ重述串 + 晚于最新一条重述串的流水（季中手动存档留下的开尾缝隙）。
   // 「晚于」取严格大于，前提是推进与后续手操不落在 Date.now() 的同一毫秒里——真实手操隔着秒，
   // 同毫秒时这笔流水既不在重述串里也不进尾项，B 会少算并假报 restated-log（测试里用假时钟隔开）。
-  // 帧里没有重述串时 latestRestatedAt 取 0，尾项自动吞下全部非种子流水，于是 B ≡ A：
+  // 帧里没有重述串时 latestRestatedAt 取 -Infinity，尾项自动吞下全部非种子流水，于是 B ≡ A：
   // 这就是正确的算法——那一帧根本没有重述串可篡改，B 不携带任何独立信息，
   // 不能据「B 与 A 不等」去指控流水或帧末现金被动过（旧写法在此处塌回种子，对第 1 季的手动存档假报 restated-log）。
-  const summaries = logs.filter((l) => l.kind === 'summary');
-  const latestRestatedAt = summaries.reduce((t, l) => Math.max(t, l.timestamp), 0);
+  // 那个「没有重述串」的哨兵值刻意不是 0：0 会被读成「时间起点」，可时间戳真被手改成 0 或负数的流水
+  // 就在严格大于下掉出 B，于是零重述串的帧又假报一次 restated-log（上一轮 C1 的形态从时间戳这里漏回来）。
+  // 取 -Infinity 后「任何时间戳都晚于它」，对真实 Date.now() 行为完全不变。
+  const summaries = logs.filter((l) => kindOfLog(l) === 'summary');
+  const latestRestatedAt = summaries.reduce((t, l) => Math.max(t, l.timestamp), Number.NEGATIVE_INFINITY);
   const restatedSum = summaries.reduce((t, l) => t + l.cashChange, 0);
-  const tailFlows = sumBy(logs, (l) => l.kind === 'flow' && !isSeedLog(l) && l.timestamp > latestRestatedAt);
+  const tailFlows = sumBy(logs, (l) => kindOfLog(l) === 'flow' && !isSeedLog(l) && l.timestamp > latestRestatedAt);
   const restatedRebuilt = seedCash + restatedSum + tailFlows;
   // 判据降级（B 不参与判定）的由来见函数开头 legacyRestated 那段；读数的身份见 FrameAudit.restatementCaliber。
   const aOk = flowRebuilt === base.actualCash;
   const bOk = restatedRebuilt === base.actualCash;
+  // 两个重建值出门前过一次 finiteOr：见上面那段「null 而非 NaN」
+  const readings = { flowRebuilt: finiteOr(flowRebuilt), restatedRebuilt: finiteOr(restatedRebuilt) };
 
-  if (aOk && (bOk || legacyRestated)) return { ...base, flowRebuilt, restatedRebuilt, status: 'ok', cause: null };
+  if (aOk && (bOk || legacyRestated)) return { ...base, ...readings, status: 'ok', cause: null };
   // 降级分支只在 A 已不平（两侧必然都不平）时到达：此时没有可信的第二侧重建可供进一步区分，
   // 只能指认「流水条目与现金不符」；restated-log 要靠 B 作证、both 要靠 B 排除，旧档都给不出这个证据。
   const cause: AuditCause = legacyRestated
     ? 'flow-log'
     : aOk ? 'restated-log' : bOk ? 'flow-log' : 'both';
-  return { ...base, flowRebuilt, restatedRebuilt, status: 'mismatch', cause };
+  return { ...base, ...readings, status: 'mismatch', cause };
 }
 
 // 包内定位：按时间升序找最早不平的那一帧（规格 §4.4；帧自带逐季快照，这是唯一可靠的季度坐标）。

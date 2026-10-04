@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { EnterpriseState, SaveFile, ProductionLine, FinancialLogRecord, Order, LoanRecord, AnnualLedger, SAVE_FORMAT_VERSION } from '../types/enterprise';
 import { absQuarter, fromAbsQuarter, emptyLedger, settleDueShortLoans, settleLongLoansAtYearEnd, isValidDiscount, discountSplit, unitCost, depreciationFor, incomeStatement, PRODUCT_BOM, PROCESS_FEE, RENT_BY_TYPE, annualRent } from '../utils/rules';
 import { MARKET_DEVELOP_YEARS, ISO_REQUIRED_YEARS, generateYearOrders } from '../config/marketDemand';
-import { RESTATED_FULL_NET_FROM_VERSION, rebuildRestatedChain } from '../utils/restatement';
+import { RESTATED_FULL_NET_FROM_VERSION, kindOfLog, rebuildRestatedChain } from '../utils/restatement';
 
 // 全局状态，用于跟踪重置次数
 let resetCount = 0;
@@ -254,12 +254,11 @@ const migrateState = (s: EnterpriseState, fromVersion: number | undefined): Ente
     });
   });
 
-  // 财务日志 flow/summary（v4）：旧档无 kind，按产生位置特征兜底推断
-  // （唯一 summary 是季度末重述串：不带 stepId 且描述含「季度结束现金变动」；其余一律 flow）
+  // 财务日志 flow/summary（v4）：旧档无 kind，按产生位置特征兜底推断并回填（字段得真的落进存档）。
+  // 谓词单点在 utils/restatement.ts 的 kindOfLog——审计器分类、这里回填，两边必须同一条规则：
+  // 各写一份的话，任何未经 loadGame 的原始帧（导出包里的 v3 帧）在审计里就与迁移后不是同一个身份。
   state.operation?.financialLogs?.forEach(l => {
-    if (!l.kind) {
-      l.kind = (!l.stepId && (l.description || '').includes('季度结束现金变动')) ? 'summary' : 'flow';
-    }
+    l.kind = kindOfLog(l);
   });
 
   // v3→v4 的语义变更：v4 起 summary.cashChange 是「自上一条重述串以来的全部净变动」（含玩家主动交易），
