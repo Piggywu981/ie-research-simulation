@@ -330,9 +330,9 @@ Expected: FAIL —— 实得 `0`（引擎自动项本季净额）而期望 `180`
       restatedDelta: finalCash - previousRestatedCash,
 ```
 
-`previousRestatedCash` 的取法：在本次 `nextQuarter` 开始时取 `state.state.operation.financialLogs` 中**最早**（时间序上最近一条）`kind === 'summary'` 的 `newCash`；若无，则取 `初始现金` 那条 flow 日志的 `cashChange`（开局 20M）。实现为一个局部变量即可，不新增状态字段、不进存档。
+`previousRestatedCash` 的取法（实现见 `enterpriseStore.ts` 推进季度那段，局部变量 `latestRestated`/`seedCash`/`previousRestatedCash`）：在本次 `nextQuarter` 开始时取 `state.state.operation.financialLogs` 中 `kind === 'summary'` 里**时间序上最近**（`timestamp` 最大）那条的 `newCash`；整串还没有 summary 时回退到 `初始现金` 那条 flow 的 `cashChange`（开局 20M）；连种子都被截断时退回本季期初现金 `initialCash`。实现为局部变量即可，不新增状态字段、不进存档。
 
-`migrateState` 里为 v3→v4 补一句注释说明该字段语义已变（旧存档的 summary 值是旧口径，审计对 v3 迁移帧只报状态、不作金额结论；不强制玩家重开一局）。
+`migrateState` 对 v3→v4 的处理不是"补一句注释"而是**就地换算**：旧档的 summary 值是旧口径（只含引擎自动项），载入时按自带的 `newCash` 链重建为新口径（`src/utils/restatement.ts` 的 `rebuildRestatedChain`，残缺到换不出即原样保留）。审计侧则由 `FrameAudit.restatementCaliber` 如实描述 B 侧读数的身份，S-T5/S-T7/S-T8 直接展示、不自行读 `version` 推断（评审 round 1 的 I1：降级判据必须待在审计器里，不能推给"未来的 UI 记得处理"）。不强制玩家重开一局。
 
 Run: `npx vitest run`
 Expected: 全绿（含 Step 0 新例）。若控制表或页面某格因此改动而变（`getQuarterEndCash` 读的是 `newCash`，不受影响），报告说明，不得回改口径。
