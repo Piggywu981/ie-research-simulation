@@ -253,6 +253,9 @@ const migrateState = (s: EnterpriseState): EnterpriseState => {
 
   // 财务日志 flow/summary（v4）：旧档无 kind，按产生位置特征兜底推断
   // （唯一 summary 是季度末重述串：不带 stepId 且描述含「季度结束现金变动」；其余一律 flow）
+  // 注意 v3→v4 的语义变更：v4 起 summary.cashChange 是「自上一条重述串以来的全部净变动」
+  // （含玩家主动交易），而 v3 存档里的旧值只是引擎自动项净额。旧档不做重算——
+  // §4.4 的审计对 v3 迁移来的帧只报状态、不作金额结论，也不强制玩家重开一局。
   state.operation?.financialLogs?.forEach(l => {
     if (!l.kind) {
       l.kind = (!l.stepId && (l.description || '').includes('季度结束现金变动')) ? 'summary' : 'flow';
@@ -2058,6 +2061,19 @@ export const useEnterpriseStore = create<{
       // 季度初日志记录 - 季初现金盘点的初始数据
       const initialCash = state.state.finance.cash;
 
+      // 上一条重述串的期末现金：时间序上最近的一条 summary 的 newCash；
+      // 若整串还没有 summary（首次推进），回退到「初始现金」种子那条 flow 的 cashChange（开局 20M）；
+      // 连种子都被截断时只能退回本季期初现金（这种帧在 §4.4 里本来就只能报 no-anchor）。
+      // 仅作局部变量供下方 quarterEndLog 的重述口径使用：不新增状态字段、不进存档格式。
+      const priorLogs = state.state.operation.financialLogs;
+      const latestRestated = priorLogs
+        .filter(l => l.kind === 'summary')
+        .reduce((t, l) => (!t || l.timestamp > t.timestamp ? l : t), undefined as FinancialLogRecord | undefined);
+      const seedCash = priorLogs
+        .filter(l => l.kind === 'flow' && l.description === '初始现金')
+        .reduce((t, l) => t + l.cashChange, 0);
+      const previousRestatedCash = latestRestated ? latestRestated.newCash : (seedCash || initialCash);
+
       // 2. 更新短贷/还本付息：到期短贷一次还本付息（运行控制表：季度-2）
       const shortSettlement = settleDueShortLoans(state.state.finance.loans, newAbsQuarter);
       if (shortSettlement.due > initialCash) {
@@ -2645,9 +2661,10 @@ export const useEnterpriseStore = create<{
       if (newCash < 0) {
         return { validationError: `本季度现金收支后将透支（缺口 ${-newCash}M），请先贴现应收账款或申请贷款` };
       }
-      const cashChange = -shortSettlement.due - apPayment + cashIncrease - totalCashOut;
       const finalCash = newCash;
-      const finalCashChange = cashChange;
+      // 此处曾有 `finalCashChange = -shortSettlement.due - apPayment + cashIncrease - totalCashOut`
+      // （= finalCash − initialCash，只含引擎自动项）直接充当季度末重述串的 cashChange；
+      // S-T3 把口径改为「自上一条重述串起的整季全部净变动」后它已无消费方，故删去，见下方 quarterEndLog。
 
       // 年末市场/ISO 年度结算：未维持的已准入市场丧失资格（第1年豁免），并复位本年度投资标记
       // 警告日志必须在此构造并入列，才能与其余 e-5 日志一起被下方统一回填补上 newCash
@@ -2740,13 +2757,16 @@ export const useEnterpriseStore = create<{
       }
 
       // 季度末日志记录 - 季度结束
+      // 重述串 = 自上一条重述串以来的全部净变动（含玩家主动交易），
+      // 不能沿用 finalCashChange（只累加引擎自动项），否则 §4.4 的 B 式重建必然少算。
+      const restatedDelta = finalCash - previousRestatedCash;
       const quarterEndLog: FinancialLogRecord = {
         id: `finlog-${Date.now()}-end`,
         year: newYear,
         quarter: newQuarter,
         timestamp: Date.now(),
         description: detailedDescription,
-        cashChange: finalCashChange,
+        cashChange: restatedDelta,
         newCash: finalCash,
         operator: '系统自动',
         kind: 'summary',

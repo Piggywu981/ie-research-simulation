@@ -1,0 +1,86 @@
+// 账实重演算（规格 §4.4）：只依赖 flow/summary 分类，不用 newCash、不用密码学、不跨帧拼接。
+// 帧内不做季度级猜测定位——按 (year,quarter) 分桶会因年末日志被 remap 到 (收尾年,4)、
+// 重述串落在 (新年,新季) 而错位；按数组顺序累计也不行，因为 quarterEndLog 在 allLogs 里排在
+// 年末结算日志之前。季度坐标改由整包给出（见 auditFrames / firstDivergingFrame）。
+import type { FinancialLogRecord, SaveFile } from '../types/enterprise';
+
+export type AuditStatus = 'ok' | 'mismatch' | 'no-anchor';
+// 两种独立重建都不平时才落到 both；单侧失败可指名道姓
+export type AuditCause = 'flow-log' | 'restated-log' | 'both';
+
+export interface FrameAudit {
+  saveId: string;
+  saveName: string;
+  year: number;
+  quarter: number;
+  flowRebuilt: number | null;      // A：Σ 全部 flow（含期初种子）
+  restatedRebuilt: number | null;  // B：期初种子 + Σ 重述串 + 尾随流水
+  actualCash: number;
+  status: AuditStatus;
+  cause: AuditCause | null;
+}
+
+const SEED_DESCRIPTION = '初始现金';
+const isSeed = (l: FinancialLogRecord) => l.description === SEED_DESCRIPTION;
+const sumBy = (logs: FinancialLogRecord[], pick: (l: FinancialLogRecord) => boolean) =>
+  logs.filter(pick).reduce((t, l) => t + l.cashChange, 0);
+
+export function auditFrame(save: SaveFile): FrameAudit {
+  const logs = save.state.operation?.financialLogs ?? [];
+  const base = {
+    saveId: save.id,
+    saveName: save.name,
+    year: save.state.operation?.currentYear ?? 0,
+    quarter: save.state.operation?.currentQuarter ?? 0,
+    actualCash: save.state.finance.cash,
+  };
+  const seeds = logs.filter((l) => l.kind === 'flow' && isSeed(l));
+  if (seeds.length === 0) {
+    // 链条被截断时报「起算链不完整」而不是「账实不符」；用 null 不用 NaN（规格 §4.4）：
+    // NaN 过 JSON.stringify 会变成 null，看着一样，但在内存里参与求和/比较会静默传染 NaN
+    return { ...base, flowRebuilt: null, restatedRebuilt: null, status: 'no-anchor', cause: null };
+  }
+
+  const seedCash = sumBy(seeds, () => true);
+  const flowRebuilt = sumBy(logs, (l) => l.kind === 'flow');
+  // B 式：期初种子 + Σ重述串 + 晚于最新一条重述串的流水（季中手动存档留下的开尾缝隙）。
+  // 「晚于」取严格大于，前提是推进与后续手操不落在 Date.now() 的同一毫秒里——真实手操隔着秒，
+  // 同毫秒时这笔流水既不在重述串里也不进尾项，B 会少算并假报 restated-log（测试里用假时钟隔开）。
+  const summaries = logs.filter((l) => l.kind === 'summary');
+  const latestRestatedAt = summaries.reduce((t, l) => Math.max(t, l.timestamp), 0);
+  const tailFlows = summaries.length === 0
+    ? seedCash
+    : sumBy(logs, (l) => l.kind === 'flow' && !isSeed(l) && l.timestamp > latestRestatedAt);
+  const restatedRebuilt = summaries.length === 0
+    ? seedCash
+    : seedCash + sumBy(summaries, () => true) + tailFlows;
+  const aOk = flowRebuilt === base.actualCash;
+  const bOk = restatedRebuilt === base.actualCash;
+
+  if (aOk && bOk) return { ...base, flowRebuilt, restatedRebuilt, status: 'ok', cause: null };
+  const cause: AuditCause = aOk ? 'restated-log' : bOk ? 'flow-log' : 'both';
+  return { ...base, flowRebuilt, restatedRebuilt, status: 'mismatch', cause };
+}
+
+// 包内定位：按时间升序找最早不平的那一帧（规格 §4.4；帧自带逐季快照，这是唯一可靠的季度坐标）。
+// no-anchor 也算"有问题的最早一帧"，但由调用方按 status 分述，不与账实不符混为一谈。
+// 先浅拷贝再排序：调用方传入的可能是 store 里的存档列表，不允许被就地改序。
+export const auditFrames = (frames: SaveFile[]): FrameAudit[] =>
+  [...frames].sort((a, b) => a.timestamp - b.timestamp).map(auditFrame);
+
+export const firstDivergingFrame = (results: FrameAudit[]): FrameAudit | null =>
+  results.find((r) => r.status !== 'ok') ?? null;
+
+export const auditSummary = (results: FrameAudit[]) => ({
+  total: results.length,
+  ok: results.filter((r) => r.status === 'ok').length,
+  mismatch: results.filter((r) => r.status === 'mismatch').length,
+  noAnchor: results.filter((r) => r.status === 'no-anchor').length,
+});
+
+// S-T7 预览与 S-T8 报告共用同一份措辞，避免两处各写一遍
+export const CAUSE_TEXT: Record<AuditCause, string> = {
+  'flow-log': '流水条目与现金不符',
+  'restated-log': '季度重述串与现金不符',
+  both: '帧末现金或期初条目被改',
+};

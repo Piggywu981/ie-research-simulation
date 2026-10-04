@@ -34,7 +34,7 @@ describe('现金流水账不变量', () => {
   // Σflow(=10) 必然比 cash(=190) 少 180，无从满足 §4.4 的「无锚点常数」重演算。
   // 此处把同一笔注资改走 registerOtherCashFlow 落账，其余脚本（短贷+贴现+8 季）不变，
   // 于是断言能与 §4.4 的字面公式严格一致：Σflow === 该帧 cash，且不需要任何外部锚点。
-  it('脚本化 8 个季度：Σflow === 期末现金，且恰好产出 8 条 summary 共 -36M', () => {
+  it('脚本化 8 个季度：Σflow === 期末现金，且恰好产出 8 条 summary', () => {
     store().registerOtherCashFlow('探针注资（使 8 季推进不透支）', 180);
     store().applyShortTermLoan();
     store().discountReceivable(7);
@@ -43,9 +43,14 @@ describe('现金流水账不变量', () => {
     const logs = store().state.operation.financialLogs;
     const summaries = logs.filter(l => l.kind === 'summary');
     expect(summaries).toHaveLength(8);
-    expect(summaries.reduce((t, l) => t + l.cashChange, 0)).toBe(-36);
-    // 关键：把 summary 加回去就会得到 154，与期末现金 190 不符（重复计 36M，规格 §2 实测）
-    expect(logs.reduce((t, l) => t + l.cashChange, 0)).toBe(154);
+    // S-T3 口径更正（规格 §4.4 第四次更正）：summary 改为「自上一条重述串以来的全部净变动」，
+    // 于是 Σ summary 望远镜式收敛到 期末现金 − 期初种子 = 190 − 20 = 170。
+    // 旧口径（只累加引擎自动项）在同一脚本下实测 -36；两者差的 206M 正是本脚本里全部玩家主动入账项
+    // （注资 180M + 短贷放款 + 贴现收现）——旧口径把它们全漏了，B 式重建因此必然少算。
+    expect(summaries.reduce((t, l) => t + l.cashChange, 0)).toBe(170);
+    // 关键：把 summary 加回 flow 合计就会得到 360，与期末现金 190 不符（重复计 170M；
+    // 规格 §2 记的 -36M/154 是同一结论在旧口径下的实测值）
+    expect(logs.reduce((t, l) => t + l.cashChange, 0)).toBe(360);
     expect(flowSum(logs)).toBe(store().state.finance.cash);
   });
 
@@ -72,6 +77,20 @@ describe('现金流水账不变量', () => {
     // 它现在在统一回填之前就入列，是年末序列里最后被回填的一条，回填后应等于期末现金
     const warn = logs.find(l => l.description.includes('市场维护警告'))!;
     expect(warn.newCash).toBe(store().state.finance.cash);
+  });
+
+  it('summary 的 cashChange 覆盖整季全部净变动（含玩家主动交易）', () => {
+    store().registerOtherCashFlow('测试注资', 180);   // 玩家主动、引擎自动项之外的现金变动
+    store().nextQuarter();
+    const state = store().state;
+    const summaries = state.operation.financialLogs.filter(l => l.kind === 'summary');
+    expect(summaries).toHaveLength(1);
+    // 重述串自「上一条重述串的期末现金」起算，首条回退到 初始现金 种子 20M；
+    // 这 180M 注资与首次推进同季，故必须被计进这一条 —— 真实净变动 = 期末现金 − 20。
+    expect(summaries[0].cashChange).toBe(state.finance.cash - 20);
+    // 旧口径（finalCashChange，只累加引擎自动项）恰好漏掉这笔注资：差额必须正好是 180M，
+    // 否则说明它要么少计了玩家操作、要么多计了引擎项。
+    expect(summaries[0].cashChange - (state.finance.cash - 200)).toBe(180);
   });
 
   // 真实跑法（不注资、不改数）才是不变量的主场：S-T3 的「未篡改必须审计为 ok」直接依赖这条
