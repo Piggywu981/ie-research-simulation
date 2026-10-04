@@ -872,7 +872,11 @@ export type PackageParseResult = { ok: true; pkg: SavePackage } | { ok: false; r
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
 
 export async function parseSavePackage(text: string): Promise<PackageParseResult> {
-  if (text.length > MAX_PACKAGE_BYTES) return { ok: false, reason: `文件过大（超过 8MB），不是合法存档包` };
+  // 体积按 **UTF-8 字节**算（规格 §4.3 的"8MB"是文件体积）：包体以中文为主，一个汉字 1 个 UTF-16 码元
+  // 却是 3 个字节，只比 text.length 会少挡三倍、把 12MB 的中文文件放过。先比码元是廉价早退（字节数 ≥ 码元数）。
+  if (text.length > MAX_PACKAGE_BYTES || new TextEncoder().encode(text).length > MAX_PACKAGE_BYTES) {
+    return { ok: false, reason: `文件过大（超过 8MB），不是合法存档包` };
+  }
 
   let parsed: unknown;
   try {
@@ -900,9 +904,11 @@ export async function parseSavePackage(text: string): Promise<PackageParseResult
   for (let i = 0; i < (parsed.saves as unknown[]).length; i++) {
     const frame = (parsed.saves as unknown[])[i];
     if (!isRecord(frame)) return { ok: false, reason: `saves[${i}] 不是对象` };
-    if (typeof frame.id !== 'string' || typeof frame.name !== 'string') {
-      return { ok: false, reason: `saves[${i}] 缺 id/name 或类型错误` };
-    }
+    // 逐字段点名（契约「每个拒绝都要说清是哪条路径」）：合并成一句"缺 id/name"会让用户不知道该改哪一处
+    if (typeof frame.id !== 'string' || !frame.id) return { ok: false, reason: `saves[${i}].id 必须是非空字符串` };
+    if (typeof frame.name !== 'string') return { ok: false, reason: `saves[${i}].name 必须是字符串` };
+    if (typeof frame.enterpriseName !== 'string') return { ok: false, reason: `saves[${i}].enterpriseName 必须是字符串` };
+    if (typeof frame.createdAt !== 'string') return { ok: false, reason: `saves[${i}].createdAt 必须是字符串` };
     // 重复 id 必须拒：`digests.frames` 以 id 为键（Task 5），两份同 id 的帧在指纹表里会静默塌成一条，
     // 于是其中一份永远"无指纹可比"（评审 Task 4 out-of-scope #3 → 归本任务负责）
     if (seenFrameIds.has(frame.id)) return { ok: false, reason: `saves[${i}].id 与前面的帧重复：${frame.id}` };
@@ -967,8 +973,9 @@ Step 1 的测试里再补一条（放在「saves 非数组被拒绝」之后）�
 ```ts
   it('saves 某一帧现金为 Infinity 或 version 缺失时被拒，原因点名是哪一帧', async () => {
     // validPackage() 的 saves 是空数组，这里自己塞一帧进去（帧的形状照 Task 5 的 SaveFile）
+    // version 引用 SAVE_FORMAT_VERSION 而不是写死 4（前言 #3：全仓不许出现字面量 4）
     const frameOf = () => ({
-      id: 'f1', name: '帧1', enterpriseName: '企业1', timestamp: 1, resetCount: 0, version: 4,
+      id: 'f1', name: '帧1', enterpriseName: '企业1', timestamp: 1, resetCount: 0, version: SAVE_FORMAT_VERSION,
       createdAt: 'x', state: JSON.parse(JSON.stringify(createFreshState())),
     });
     const pkgWith = async (mutate: (pkg: any) => void) => {
@@ -1000,10 +1007,25 @@ Step 1 的测试里再补一条（放在「saves 非数组被拒绝」之后）�
   });
 ```
 
+**落地实况（S-T6 已按此实现，S-T7/S-T8 照此消费；片段有八处需要更正或补齐，另附四条实测与方法记录）**
+
+1. **体积按 UTF-8 字节算**，见上面 Step 3 片段已改的那三行。原写法 `text.length > MAX_PACKAGE_BYTES` 量的是 UTF-16 码元，而包体以中文为主（1 码元 = 3 字节），于是**少挡三倍**：一份 12MB 字节的中文文件只有 4M 码元，从这道闸前走过。新增用例先自证 `chinese.length < 8MiB` 再断言 `TextEncoder` 出的字节数 `> 8MiB` 并被拒——否则它与"9MB ASCII 那一例"是同一个断言、零独立覆盖；另有一例钉住边界是 `>`（恰好 8MiB 的输入走到解析才失败，原因必须是「文件不是有效 JSON」而不是「超过 8MB」）。
+2. **补 `digests` 的形状校验**（片段完全没有这一条，是真缺口）：Task 7 直接 `pkg.digests.frames[save.id]` 再 `.startsWith('sha256:')`，`digests` 缺失、`frames` 不是表、表里的值不是字符串，都会让预览面板在"给结论"之前当场抛。裁定的两件事：**逐帧声明缺某一条不拒**（缺的是一条证据而非坏结构，重演算照跑；且计划给 Task 7 的代码本就有 `!declared → 哈希未计算（包内无记录）` 那一支，它还给空 saves 造合成帧 `id='current'`，永远不在表里）、**空串声明不拒**（`digests.frames[id] = ''` 仍是个字符串，比值语义归 Task 7；规格 §4.4 明写"绝不因未计算而判失败"）。拒的只有形状：非 `digests` 对象、`package` 不是字符串、`frames` 不是对象（数组也算不合格，见下条 `isPlainObject`）、表里某个值不是字符串。
+3. **顶层与表用 `isPlainObject`（`isRecord` 认数组）**：`typeof [] === 'object'`，让数组走进"对象"分支，报出来的会是某个下层字段缺失，说不清"这里本该是个对象"。`current`/帧的 `state` 那两处仍用 `isRecord`（片段如此），因为紧跟着的五域检查会把数组打成 `current.finance 缺失`，够点名。
+4. **帧的元数据逐字段点名**，并把 `enterpriseName`/`createdAt` 也要求为字符串（片段合成一句"缺 id/name"且不管这两个展示字段）：Task 7 的时间跨度与合成帧 `createdAt` 要读它们。放行它们缺失的风险实测过——`saveGame`/`autoSaveGame` 自**初始提交**起每次都写这两个字段（`enterpriseStore.ts:399/429`，`git log -S createdAt` 只有一条命中），所以要求它们不拒任何真档。
+5. **`stateShapeProblem` 比片段宽**，判据全部来自"下游会不会抛/会不会算错"这一条来源，逐处对应源码行号：`finance.loans`、`operation.financialLogs`、`production.factories`、`marketing.markets`、`marketing.isoCertifications` 五张表按 **缺失/null 放行、在场必须是数组、条目必须是对象** 的口径——缺的正是旧档本就没有、由 `migrateState` 补齐的字段（`:223/:260/:288-295`），在校验里拒掉等于堵死迁移路径；而 `f.productionLines` **反过来**（缺失即拒），因为 `:251` 无条件 `f.productionLines.forEach(...)`，缺了载入当场抛。
+6. **流水行的三条判据**（`id` 字符串、`timestamp`/`cashChange` 有限数字）：`kindOfLog` 对 `null` 条目读 `l.kind` 直接抛（restatement.ts:29，auditFrame 第一行就调它），非数值 `cashChange` 让 A/B 两侧求和 NaN 传染 → 印出来是「账实不符」而实际是"算不了"，`id` 非字符串会在两条同时间戳重述串排序时 `localeCompare` 抛（restatement.ts:45、audit.ts:124）。**刻意不要求 `newCash`**（restatement.ts 明写"缺 newCash 的行原样跳过"，v1/v2 旧档经迁移只补 kind），也**绝不回填、绝不推断 kind**——片段与实现都只判"显式值是否合法"，`kind` 缺失时的归类单点归 `kindOfLog`（Task 3 定的同源规则，这里复制第二份就是 §5.7 那类漂移）。
+7. **`currentYear`/`currentQuarter` 加"必须是整数"**（片段只判区间，`2.5` 能过）；上界仍是 1..**5**，与预检 #6 一致。
+8. **"绝不抛"的三条兜底**：非字符串入参（JS 调用方给 `undefined`）、深嵌套 JSON.parse 的 `RangeError`（`'[['.repeat(20000)` 那一条，量级到不了 8MB 所以体积闸挡不住）、以及最外层 catch-all。Task 7 的调用点只有 `try…finally` 没有 catch，所以这三条是契约不是客气话；用例是一张 30 行畸形输入表，逐个断言"给得出结果对象、被拒时原因是中文"。
+9. **`__proto__` 的处置：只读白名单字段，绝不把解析出来的键集合并/拷贝到别的对象上**。`JSON.parse` 把 `__proto__` 落成**自有**数据属性、不触发 setter，所以危险不在解析而在"校验器顺手做整洁拷贝"——`Object.assign(target, parsed)` 会给那个键走 setter，把返回对象的原型换成载荷给的形状。用例钉四条：载荷后 `({}).polluted` 仍是 `undefined`、`Object.prototype` 上没有 `polluted`、放行的包 `Object.getPrototypeOf(pkg) === Object.prototype` 且 `pkg.polluted === undefined`、以及把 `__proto__` 塞进 `current.finance` 指望"继承一个 cash 进来"时读到的是 `undefined` 而非 999（拒绝原因点名 `current.finance.cash`）。变异自证里 `Object.assign` 那一改确实让"不许换掉原型"那例死掉。
+10. `version: 4` 夹具改为引用 `SAVE_FORMAT_VERSION`（前言 #3）。另外实测**片段在 `target: "es5"` + `strict` 下可直接编译**：`for…of` 跑的是数组（不是 Set/Map）、`seenFrameIds` 只 `has`/`add` 未迭代、`every` 的形参有上下文类型，故本任务不需要 `Array.from` 改写；实现里仍把 `every` 形参显式标注为 `unknown` 以免读到 `any`。
+11. **整数现金判据的经验证据**（不是对规则的信任）：用真引擎跨一年边界（注资 + 短贷两次 + 贴现 7M + 付税两次 + 7 次推进 + 下料单）取 13 帧，每一步都断言 `Number.isInteger(cash)` 与四档应收整数，再把它们塞进包过 `parseSavePackage` → `ok:true`，且 `auditFrames` 十三帧全 `ok`（假时钟每步推进 10ms 隔开，同毫秒会撞上 `audit.ts:88-90` 已记录的 B 式精度限制）。折旧与税走 `Math.floor`（`rules.ts:28/128`）、贴现 `amount/7` 由 `isValidDiscount` 保证 7 的倍数（`rules.ts:33-35`）、贷款本金恒为 20M 而利率 10%/5% → 利息恒整数。
+12. **`migrateState` 仍是模块私有**（`enterpriseStore.ts:219`），预检 #5 里"不可见就加 export"的决定留给 S-T7：本任务用等价断言（对放行的包逐个断言 `:223/:233/:251/:260/:288-295/:298-300` 解引用的那些处真实存在）替代调用它，另加一条"解析出来的包能原样喂给 `auditFrames` 与 `buildSavePackage`"。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run tests/savePackage.test.ts`
-Expected: 全过。若"超 8MB"一例慢，说明测试构造本身太大，改为断言 `text.length` 分支而非真实 9MB 字符串——**不得**删掉该用例。
+Expected: 全过。"超 8MB"一例保持真实 9MB 字符串（实测整文件 0.8s 内跑完，不必改成合成断言），但**必须**另有一条按 UTF-8 字节算的中文载荷用例（见实况 #1）——只有 9MB ASCII 那一例时，把测量退回 `text.length` 是不会死的。
 
 - [ ] **Step 5: 提交**
 
