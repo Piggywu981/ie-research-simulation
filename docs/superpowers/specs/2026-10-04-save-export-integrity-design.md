@@ -131,10 +131,13 @@ export interface SavePackage {
 
 改用**双重建 + 包内定位**（第二次更正：帧内按数组顺序累计也不行，因为 `quarterEndLog` 在 `allLogs` 里排在年末结算日志**之前**，每个跨年标记都会假不等）：
 
-- **A**：`Σ(该帧全部 flow.cashChange)`（含 `初始现金` 种子）应等于该帧 `finance.cash`
-- **B**：`初始现金 + Σ(该帧全部 summary.cashChange)` 应等于该帧 `finance.cash`（重述串逐次推进各记一次净额）
+**B 式重建的前提是重述串必须覆盖整季全部现金变动**（2026-10-04 S-T3 上报后追加的第四次更正）：`quarterEndLog.cashChange` 取自 `finalCashChange`（`enterpriseStore.ts:2648-2650`），而它只累加**引擎自动项**（应收收现、短贷、应付、原料、维护、租金、长贷息、行政、研发），**不含玩家在该季主动发起的交易**。实测：一次带 180M 注资、短贷、贴现并推进 5 季的存档，A 侧 202 = 现金 202 成立，B 侧只有 22（差值恰为那笔注资）。因此**必须先修重述串语义**：`cashChange` 改为"自上一条重述串以来的全部净变动"，即 `finalCash - 上一条 summary.newCash`（首条以 `初始现金` 为链头）。该字段今天没有别的消费方（S-T2 的合计已过滤 `kind`，页面读的是它的 `newCash`），改动半径小，但需同步 `migrateState` 与 v4 语义说明。
 
-A 成 B 败 → 重述串被改；A 败 B 成 → 流水条目被改；两者皆败 → 帧末现金（或种子本身）被改；无种子 → 「起算链不完整」。
+修好后：
+- **A**：`Σ(该帧全部 flow.cashChange)`（含 `初始现金` 种子）应等于该帧 `finance.cash`
+- **B**：`初始现金 + Σ summary.cashChange + Σ(时间戳晚于最新一条 summary 的 flow)` 应等于该帧 `finance.cash`（末项处理"季中手动存档"这条开尾缝隙）
+
+A 成 B 败 → 重述串被改；A 败 B 成 → 流水条目被改；两者皆败 → 帧末现金（或期初条目）被改；无种子 → 「起算链不完整」。**判据不依赖 `newCash` 数值正确性，只用其时间序。** 无 `flow` 之外的信息时，`no-anchor` 帧的 `flowRebuilt`/`restatedRebuilt` 用 `null` 而非 `NaN`（`NaN` 经 `JSON.stringify` 会变成 `null`，会让 S-T8 报告与 S-T7 面板的读数失真）；`firstDivergingFrame` 把 `no-anchor` 也算作"第一个有问题的那一帧"，但结论单列，不与"账实不符"混述。
 
 **季度坐标交给整包**：`auditFrames` 按 `timestamp` 升序，`firstDivergingFrame` 取最早不平的那一帧，报「自第X年第Y季起账实不符」——存档包本就逐季携带快照（§4.2），这是唯一可靠且不依赖日志排序的定位来源。该方案**不依赖密码学，也不依赖 `newCash` 字段**（后者经 S-T1 修复后虽已处处为真值，仍不作判据）。
 

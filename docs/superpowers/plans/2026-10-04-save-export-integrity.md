@@ -288,15 +288,54 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 
 ---
 
-## Task 3: 账实重演算
+## Task 3: 修重述串口径 + 账实重演算
 
 **Files:**
+- Modify: `src/store/enterpriseStore.ts`（`quarterEndLog` 的 `cashChange` 口径、`migrateState`）
 - Create: `src/utils/audit.ts`
-- Test: `tests/audit.test.ts`（新建）
+- Test: `tests/cashTrail.test.ts`（追加口径断言）、`tests/audit.test.ts`（新建）
 
 **Interfaces:**
 - Consumes: Task 1 的 `kind`、`FinancialLogRecord`、`EnterpriseState`
-- Produces: 类型 `AuditStatus` / `AuditCause` / `FrameAudit`；函数 `auditFrame(save: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（按 `timestamp` 升序）、`firstDivergingFrame(results: FrameAudit[]): FrameAudit | null`、`auditSummary(results): { total; ok; mismatch; noAnchor }`。`FrameAudit` 的字段名固定为 `flowRebuilt` / `restatedRebuilt` / `actualCash` / `cause`，S-T5/S-T7/S-T8 按此消费。
+- Produces: 新口径的 `summary.cashChange` = 自上一条重述串以来的**全部**净变动；类型 `AuditStatus` / `AuditCause` / `FrameAudit`；函数 `auditFrame(save: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（按 `timestamp` 升序、不改动入参）、`firstDivergingFrame(results: FrameAudit[]): FrameAudit | null`、`auditSummary(results): { total; ok; mismatch; noAnchor }`、`CAUSE_TEXT`。`FrameAudit` 字段名固定为 `flowRebuilt` / `restatedRebuilt` / `actualCash` / `cause`，其中两个重建值类型为 `number | null`（`no-anchor` 用 `null`，不用 `NaN`——`NaN` 过 `JSON.stringify` 会变 `null`，让报告与面板读数失真）。S-T5/S-T7/S-T8 按此消费。
+
+**为什么要多改这一处 store**（规格 §4.4 第四次更正）：原 `quarterEndLog.cashChange = finalCashChange` 只累加引擎自动项，不含玩家该季主动交易。实测一次带 180M 注资的 5 季存档：A 侧 202 = 现金 202 ✓，B 侧仅 22 ✗。B 式重建要成立，重述串必须先变成"整季全部净变动"。该字段今天没有别的消费方（S-T2 的合计已过滤 `kind`，页面读的是它的 `newCash`），半径小。
+
+- [ ] **Step 0: 写重述串口径的失败测试**
+
+追加到 `tests/cashTrail.test.ts`：
+
+```ts
+  it('summary 的 cashChange 覆盖整季全部净变动（含玩家主动交易）', () => {
+    store().registerOtherCashFlow('测试注资', 180);   // 玩家主动、引擎自动项之外的现金变动
+    store().nextQuarter();
+    const state = store().state;
+    const summaries = state.operation.financialLogs.filter(l => l.kind === 'summary');
+    expect(summaries).toHaveLength(1);
+    // 该季真实净变动 = 期末现金 - 期初现金(20 + 180)
+    expect(summaries[0].cashChange).toBe(state.finance.cash - 200);
+  });
+```
+
+Run: `npx vitest run tests/cashTrail.test.ts`
+Expected: FAIL —— 实得 `0`（引擎自动项本季净额）而期望 `180`，证明旧口径漏计玩家操作。
+
+- [ ] **Step 0b: 改口径**
+
+`quarterEndLog` 构造处（`enterpriseStore.ts:2743-2753` 一带）把 `cashChange: finalCashChange` 改为"期末现金 − 上一条重述串的期末现金"，并在同一处注释写明理由：
+
+```ts
+      // 重述串 = 自上一条重述串以来的全部净变动（含玩家主动交易），
+      // 不能沿用 finalCashChange（只累加引擎自动项），否则 §4.4 的 B 式重建必然少算。
+      restatedDelta: finalCash - previousRestatedCash,
+```
+
+`previousRestatedCash` 的取法：在本次 `nextQuarter` 开始时取 `state.state.operation.financialLogs` 中**最早**（时间序上最近一条）`kind === 'summary'` 的 `newCash`；若无，则取 `初始现金` 那条 flow 日志的 `cashChange`（开局 20M）。实现为一个局部变量即可，不新增状态字段、不进存档。
+
+`migrateState` 里为 v3→v4 补一句注释说明该字段语义已变（旧存档的 summary 值是旧口径，审计对 v3 迁移帧只报状态、不作金额结论；不强制玩家重开一局）。
+
+Run: `npx vitest run`
+Expected: 全绿（含 Step 0 新例）。若控制表或页面某格因此改动而变（`getQuarterEndCash` 读的是 `newCash`，不受影响），报告说明，不得回改口径。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -420,14 +459,15 @@ export interface FrameAudit {
   saveName: string;
   year: number;
   quarter: number;
-  flowRebuilt: number;      // A：Σ 全部 flow（含期初种子）
-  restatedRebuilt: number;  // B：期初种子 + Σ 全部 summary（逐次推进净额）
+  flowRebuilt: number | null;      // A：Σ 全部 flow（含期初种子）
+  restatedRebuilt: number | null;   // B：期初种子 + Σ 重述串 + 尾随流水
   actualCash: number;
   status: AuditStatus;
   cause: AuditCause | null;
 }
 
 const SEED_DESCRIPTION = '初始现金';
+const isSeed = (l: FinancialLogRecord) => l.description === SEED_DESCRIPTION;
 const sumBy = (logs: FinancialLogRecord[], pick: (l: FinancialLogRecord) => boolean) =>
   logs.filter(pick).reduce((t, l) => t + l.cashChange, 0);
 
@@ -442,13 +482,21 @@ export function auditFrame(save: SaveFile): FrameAudit {
   };
   const seeds = logs.filter((l) => l.kind === 'flow' && l.description === SEED_DESCRIPTION);
   if (seeds.length === 0) {
-    // 链条被截断时报「起算链不完整」而不是「账实不符」（规格 §4.4）
-    return { ...base, flowRebuilt: NaN, restatedRebuilt: NaN, status: 'no-anchor', cause: null };
+    // 链条被截断时报「起算链不完整」而不是「账实不符」；用 null 不用 NaN（规格 §4.4）
+    return { ...base, flowRebuilt: null, restatedRebuilt: null, status: 'no-anchor', cause: null };
   }
 
   const seedCash = sumBy(seeds, () => true);
   const flowRebuilt = sumBy(logs, (l) => l.kind === 'flow');
-  const restatedRebuilt = seedCash + sumBy(logs, (l) => l.kind === 'summary');
+  // B 式：期初种子 + Σ重述串 + 晚于最新一条重述串的流水（季中手动存档留下的开尾缝隙）
+  const summaries = logs.filter((l) => l.kind === 'summary');
+  const latestRestatedAt = summaries.reduce((t, l) => Math.max(t, l.timestamp), 0);
+  const tailFlows = summaries.length === 0
+    ? seedCash
+    : sumBy(logs, (l) => l.kind === 'flow' && !isSeed(l) && l.timestamp > latestRestatedAt);
+  const restatedRebuilt = summaries.length === 0
+    ? seedCash
+    : seedCash + sumBy(summaries, () => true) + tailFlows;
   const aOk = flowRebuilt === base.actualCash;
   const bOk = restatedRebuilt === base.actualCash;
 
@@ -457,12 +505,13 @@ export function auditFrame(save: SaveFile): FrameAudit {
   return { ...base, flowRebuilt, restatedRebuilt, status: 'mismatch', cause };
 }
 
-// 包内定位：按时间升序找最早不平的那一帧（规格 §4.4；帧自带逐季快照，这是唯一可靠的季度坐标）
+// 包内定位：按时间升序找最早不平的那一帧（规格 §4.4；帧自带逐季快照，这是唯一可靠的季度坐标）。
+// no-anchor 也算"有问题的最早一帧"，但由调用方按 status 分述，不与账实不符混为一谈。
 export const auditFrames = (frames: SaveFile[]): FrameAudit[] =>
   [...frames].sort((a, b) => a.timestamp - b.timestamp).map(auditFrame);
 
 export const firstDivergingFrame = (results: FrameAudit[]): FrameAudit | null =>
-  results.find((r) => r.status === 'mismatch') ?? null;
+  results.find((r) => r.status !== 'ok') ?? null;
 
 export const auditSummary = (results: FrameAudit[]) => ({
   total: results.length,
