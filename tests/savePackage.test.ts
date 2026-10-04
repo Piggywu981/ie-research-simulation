@@ -742,18 +742,38 @@ describe('存档包解析：放行即下游可读（不经过 store 的等价断
       [(p) => { p.current.marketing.markets = [null]; }, 'current.marketing.markets'],
       [(p) => { p.current.marketing.isoCertifications = 5; }, 'current.marketing.isoCertifications'],
       [(p) => { p.current.operation.financialLogs = [null]; }, 'current.operation.financialLogs'],
+      // 研发 P2 分期字段：migrateState 判过真假之后就地写 `P2.status = …`（enterpriseStore.ts:282-285），
+      // 真值非对象（数字/布尔/字符串）会当场抛，缺失才是它要补的形态
+      [(p) => { p.current.production.productRD = 5; }, 'current.production.productRD'],
+      [(p) => { p.current.production.productRD.P2 = 5; }, 'current.production.productRD.P2'],
       // 流水行缺 id/timestamp/cashChange：审计求和与排序会 NaN/抛，格式问题不能被印成账实不符
       [(p) => { p.current.operation.financialLogs = [{ description: '初始现金', kind: 'flow' }]; }, 'financialLogs[0]'],
+      [(p) => { p.current.operation.financialLogs = [{ description: 5, cashChange: 1, timestamp: 1, id: 'x' }]; }, 'financialLogs[0].description'],
     ];
     for (const [mutate, path] of cases) {
       const pkg = bag(text);
       mutate(pkg);
       expect(await reasonOf(JSON.stringify(pkg))).toContain(path);
     }
+
+    // description 那条守卫防的是**真实崩点**，不是洁癖：kindOfLog 只在 kind 缺失时兜底，
+    // 兜底谓词写的是 `(l.description || '').includes('季度结束现金变动')`（restatement.ts:29），
+    // 数字描述于是抛 `.includes is not a function`——Task 7 的预览于是整页崩。
+    // 先自证这个崩点存在（不经过 parseSavePackage 直接喂 auditFrame），再证明闸门把它拦在门外。
+    const crashing = frameOf();
+    crashing.state.operation.financialLogs = [{ id: 'x', description: 5, cashChange: 20, newCash: 20, timestamp: 1 }];
+    expect(() => auditFrame(crashing as unknown as SaveFile)).toThrow();
+    const crashPkg = bag(text);
+    crashPkg.saves = [crashing];
+    expect(await reasonOf(JSON.stringify(crashPkg))).toContain('financialLogs[0].description');
+
     // 旧档的"字段缺失"是 migrateState 的活，不是拒绝的理由（v1/v2 本就没有 loans）
     const legacy = bag(text);
     delete legacy.current.finance.loans;
     delete legacy.current.operation.financialLogs;
+    delete legacy.current.production.productRD.P2;
+    // 描述缺失/null 走 `(l.description || '')` 是安全的，v1/v2 旧档确有缺字段的行
+    legacy.current.operation.financialLogs = [{ id: 'a', cashChange: 20, timestamp: 1 }, { id: 'b', cashChange: -2, newCash: 18, timestamp: 2, description: null }];
     expect((await parseSavePackage(JSON.stringify(legacy))).ok).toBe(true);
   });
 

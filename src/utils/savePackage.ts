@@ -142,7 +142,14 @@ const tableProblem = (
   return null;
 };
 
-// 流水行的判据。三条各对应下游一处真实的崩点或错判，缺任何一条都会把格式问题印成账实不符：
+// 与 tableProblem 同一条口径的"对象版"：**缺失/null 放行**（旧档没有该字段是 migrateState 的活），
+// 在场但不是对象就拒——migrateState 对它就地读写字段，真值非对象会当场抛（见下面的调用处行号）。
+const optionalObjectProblem = (value: unknown, path: string): string | null =>
+  value === undefined || value === null || isRecord(value)
+    ? null
+    : `${path} 必须是对象，实际为 ${typeWord(value)}`;
+
+// 流水行的判据。四条各对应下游一处真实的崩点或错判，缺任何一条都会把格式问题印成账实不符：
 //   条目非对象 → kindOfLog 读 `l.kind` 当场抛（restatement.ts:29，auditFrame 第一行就会调用它）；
 //   显式但非法的 kind → **必须拒**（评审 Task 3 round-3 的观察）：kindOfLog 只在 kind **缺失**时兜底推断，
 //     'Flow' / '' / null 这类值既不被认成 summary 也不被认成 flow，那条于是同时退出 A 与 B 两侧求和，
@@ -158,6 +165,12 @@ const logRowProblem = (row: Record<string, unknown>, path: string): string | nul
     return `${path} 存在非法 kind：${briefly(kind)}（只认 'flow' 与 'summary'；缺失时由 restatement.ts 的 kindOfLog 兜底推断，此处不替它推断）`;
   }
   if (typeof row.id !== 'string') return `${path}.id 必须是字符串，实际为 ${briefly(row.id)}`;
+  // description 只在"带类型"时判：kindOfLog 的兜底谓词写的是 `(l.description || '').includes(...)`
+  // （restatement.ts:29），于是**数字/布尔**这类真值非字符串会当场 `.includes is not a function` 抛，
+  // 而缺失/null 走 `|| ''` 是安全的（v1/v2 旧档确有缺字段的行）——所以这里"缺失放行、类型错才拒"。
+  if (row.description !== undefined && row.description !== null && typeof row.description !== 'string') {
+    return `${path}.description 必须是字符串，实际为 ${briefly(row.description)}`;
+  }
   if (!isFiniteNumber(row.timestamp)) return `${path}.timestamp 必须是有限数字，实际为 ${briefly(row.timestamp)}`;
   if (!isFiniteNumber(row.cashChange)) return `${path}.cashChange 必须是有限数字，实际为 ${briefly(row.cashChange)}`;
   return null;
@@ -205,6 +218,15 @@ const stateShapeProblem = (label: string, state: Record<string, unknown>): strin
   const prod = isRecord(state.production) ? state.production : {};
   const factoriesProblem = tableProblem(prod.factories, `${label}.production.factories`, factoryProblem);
   if (factoriesProblem) return factoriesProblem;
+  // P2 分期字段（enterpriseStore.ts:282-285）：`productRD?.P2 && !P2.status` 之后就地写
+  // `P2.status = …` / `P2.paidQuarters = …`，所以 P2 只要是**真值非对象**（数字/布尔/字符串）就当场抛；
+  // 缺失仍放行——那正是 migrateState 要补的形态。
+  const rdProblem = optionalObjectProblem(prod.productRD, `${label}.production.productRD`);
+  if (rdProblem) return rdProblem;
+  if (isRecord(prod.productRD)) {
+    const p2Problem = optionalObjectProblem(prod.productRD.P2, `${label}.production.productRD.P2`);
+    if (p2Problem) return p2Problem;
+  }
 
   const mkt = isRecord(state.marketing) ? state.marketing : {};
   const marketsProblem = tableProblem(mkt.markets, `${label}.marketing.markets`);
