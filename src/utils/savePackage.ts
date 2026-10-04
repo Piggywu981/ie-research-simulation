@@ -38,7 +38,10 @@ function findDuplicateIds(saves: SaveFile[]): string[] {
 export async function buildSavePackage(state: EnterpriseState, saves: SaveFile[]): Promise<SavePackage> {
   const dupes = findDuplicateIds(saves);
   if (dupes.length > 0) {
-    throw new Error(`存档列表里有重复的存档 id：${dupes.join('、')}。同一 id 的多帧无法在指纹表里分别记录，请先删除多余存档再导出。`);
+    // 提示语必须说清"删除"这个动作的代价（评审 Task 5 finding 1）：面板的删除按 id 过滤，
+    // 同 id 的帧会被一并移除，所以"先删掉多余的那份"这种说法是把用户往丢历史的方向推。
+    throw new Error(`存档列表里有重复的存档 id：${dupes.join('、')}。同一 id 的多帧无法在指纹表里分别记录，导出已中止。`
+      + `面板的「删除存档」按 id 删除，会把同 id 的帧一并删掉；若这些帧都要保留，请先在浏览器本地存储里把 id 改成互不相同，再重新导出。`);
   }
 
   // 深拷贝 current 与 saves 后再算指纹：本函数是异步的（逐帧哈希要 await），期间按钮禁用但 store 仍在跑，

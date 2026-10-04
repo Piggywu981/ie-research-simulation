@@ -100,10 +100,12 @@ describe('存档包结构', () => {
     expect(pkg.digests.package).toMatch(/^sha256:[0-9a-f]{16}$/);
     const parsed = JSON.parse(serializePackage(pkg)) as unknown as Record<string, unknown>;
     expect(await digestText(canonicalStringify(shellFromBytes(parsed)))).toBe(pkg.digests.package);
-    // 反证：digests 里的值若参与哈希，改它就该改变覆盖范围 → 声明值不再等于重算值
+    // 反证要说清是哪一侧：把 digests **连同**改过的字节整体去哈希，得到的必须不是声明值——
+    // 这才证明声明算的是"去掉 digests 的壳"，而不是一条碰巧相等的断言（评审 Task 5 finding 3：
+    // 原来这行先把 digests 剔掉再哈希，于是它与上面那行是同一个断言，零独立覆盖）。
     const tampered = JSON.parse(serializePackage(pkg)) as Record<string, unknown>;
     (tampered.digests as SavePackage['digests']).package = 'sha256:0000000000000000';
-    expect(await digestText(canonicalStringify(shellFromBytes(tampered)))).toBe(pkg.digests.package);
+    expect(await digestText(canonicalStringify(tampered))).not.toBe(pkg.digests.package);
   });
 
   it('包指纹覆盖帧的展示字段，逐帧指纹不覆盖（改名会呈现"包指纹不符 + 逐帧通过"）', async () => {
@@ -141,6 +143,13 @@ describe('存档包结构', () => {
     // digestFrame 的壳里少算任一个，那一例就与基准帧撞成同一指纹；而"改了就该变"正是 S-T7 比值的前提。
     const cashPlusOne = createFreshState();
     cashPlusOne.finance.cash += 1;
+    // 只验 finance.cash 不够：把壳窄化成 `state: { finance }`（丢掉 operation）时，本文件仍全绿，
+    // 而 `operation.financialLogs` 正是 §4.4 账实重演算要读的那份数据——指纹不再覆盖流水，
+    // 改流水就只会呈现"逐帧指纹匹配"。（评审 Task 5 finding 2 的变异 M16/M17）
+    const withExtraLog = createFreshState();
+    withExtraLog.operation.financialLogs.push({} as never);
+    const logTextEdited = createFreshState();
+    logTextEdited.operation.financialLogs[0] = { ...logTextEdited.operation.financialLogs[0], description: '改了描述' };
     const digestOf = async (over: Partial<SaveFile>): Promise<string> => {
       const one = frame(over);
       const built = await buildSavePackage(createFreshState(), [one]);
@@ -153,6 +162,8 @@ describe('存档包结构', () => {
       digestOf({ version: SAVE_FORMAT_VERSION + 1 }),
       digestOf({ resetCount: 1 }),
       digestOf({ state: cashPlusOne }),
+      digestOf({ state: withExtraLog }),
+      digestOf({ state: logTextEdited }),
       digestOf({ id: 's1-other-id' }),
     ]);
     changed.forEach((digest) => expect(digest).not.toBe(base));
