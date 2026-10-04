@@ -253,7 +253,7 @@ const migrateState = (s: EnterpriseState): EnterpriseState => {
 
   // 财务日志 flow/summary（v4）：旧档无 kind，按产生位置特征兜底推断
   // （唯一 summary 是季度末重述串：不带 stepId 且描述含「季度结束现金变动」；其余一律 flow）
-  state.operation.financialLogs.forEach(l => {
+  state.operation?.financialLogs?.forEach(l => {
     if (!l.kind) {
       l.kind = (!l.stepId && (l.description || '').includes('季度结束现金变动')) ? 'summary' : 'flow';
     }

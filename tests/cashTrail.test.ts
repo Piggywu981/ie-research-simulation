@@ -37,17 +37,17 @@ describe('现金流水账不变量', () => {
   });
 
   it('每条 flow 日志的 newCash 都不为 0 占位', () => {
-    useEnterpriseStore.setState({
-      state: { ...store().state, finance: { ...store().state.finance, cash: 200 } },
-    });
-    // 购置一条带安装期的生产线，让「安装分期」日志也进入本次跑法：
-    // 三个曾逃逸回填的站点（自动开工 q-10 / 安装分期 q-8 / 市场放弃警告 e-5）必须都被跑到，
-    // 否则下面的空数组断言会因“压根没这类日志”而空过（规格 §7.2）
-    store().addProductionLine('factory-1', 'manual', 'P1');
+    // 注资同样走账（与上一例同法）：直接 setState 改 cash 会让这帧的账实对不上
+    store().registerOtherCashFlow('测试注资', 180);
+    // 必须买一条真有安装期的线：semi-automatic 安装 2 季，之后两季各付 4M 分期；
+    // manual 的安装期是 0，买来即 running，安装分期日志压根不产生（评审 S-T1 Important 1）
+    store().addProductionLine('factory-1', 'semi-automatic', 'P1');
     for (let i = 0; i < 8; i++) store().nextQuarter();
 
     const logs = store().state.operation.financialLogs;
-    expect(logs.filter(l => l.stepId === 'q-8')).not.toHaveLength(0);
+    // 三处曾逃逸回填的站点，逐个用「本次跑法真的产出了这类日志、且它的余额不是占位 0」来钉：
+    // 安装分期看分期日志本身（首期款日志总带真实余额，不能替它作证）、自动开工看 q-10、警告看描述
+    expect(logs.some(l => l.description.includes('安装投资分期') && l.newCash !== 0)).toBe(true);
     expect(logs.filter(l => l.stepId === 'q-10')).not.toHaveLength(0);
     expect(logs.filter(l => l.description.includes('市场维护警告'))).not.toHaveLength(0);
 
