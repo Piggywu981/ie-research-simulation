@@ -887,12 +887,17 @@ export async function parseSavePackage(text: string): Promise<PackageParseResult
   // **同一套校验也必须逐帧跑在 saves 上**（评审 round-3 new finding #2）：Task 5 从 localStorage 导出的就是这些原始帧、
   // Task 7 审计与 Task 8 报告印的也是它们。只查 current 会让 `saves[i].finance.cash = 1e999`（`JSON.parse` 得到 Infinity）
   // 或越界年季直接进面板与报告，而审计对 Infinity 现金会平法判 `ok`（报告 H8.2）。
+  const seenFrameIds = new Set<string>();
   for (let i = 0; i < (parsed.saves as unknown[]).length; i++) {
     const frame = (parsed.saves as unknown[])[i];
     if (!isRecord(frame)) return { ok: false, reason: `saves[${i}] 不是对象` };
     if (typeof frame.id !== 'string' || typeof frame.name !== 'string') {
       return { ok: false, reason: `saves[${i}] 缺 id/name 或类型错误` };
     }
+    // 重复 id 必须拒：`digests.frames` 以 id 为键（Task 5），两份同 id 的帧在指纹表里会静默塌成一条，
+    // 于是其中一份永远"无指纹可比"（评审 Task 4 out-of-scope #3 → 归本任务负责）
+    if (seenFrameIds.has(frame.id)) return { ok: false, reason: `saves[${i}].id 与前面的帧重复：${frame.id}` };
+    seenFrameIds.add(frame.id);
     if (typeof frame.timestamp !== 'number' || !Number.isFinite(frame.timestamp)) {
       return { ok: false, reason: `saves[${i}].timestamp 必须是有限数字` };
     }
@@ -932,6 +937,18 @@ const stateShapeProblem = (label: string, state: Record<string, unknown>): strin
   if (typeof op.currentQuarter !== 'number' || op.currentQuarter < 1 || op.currentQuarter > 4) {
     return `${label}.operation.currentQuarter 越界：${JSON.stringify(op.currentQuarter)}`;
   }
+  // 显式但非法的 kind 必须拒（评审 Task 3 round-3 的观察）：`kind: 'Flow'` / `kind: ''` 这类值
+  // 既不被 `kindOfLog` 认成 summary 也不被认成 flow 之外的兜底（它只在 kind **缺失**时兜底），
+  // 于是那条日志同时退出 A 与 B 两侧求和——审计会把它读成"账实不符"，其实是格式问题。
+  const logs = (state.operation as Record<string, unknown>).financialLogs;
+  if (Array.isArray(logs)) {
+    for (const l of logs as unknown[]) {
+      const kind = isRecord(l) ? (l as Record<string, unknown>).kind : undefined;
+      if (kind !== undefined && kind !== 'flow' && kind !== 'summary') {
+        return `${label}.operation.financialLogs 存在非法 kind：${JSON.stringify(kind)}`;
+      }
+    }
+  }
   return null;
 };
 ```
@@ -959,6 +976,18 @@ Step 1 的测试里再补一条（放在「saves 非数组被拒绝」之后）�
     const r2 = await parseSavePackage(await pkgWith((pkg) => { delete pkg.saves[0].version; }));
     expect(r2.ok).toBe(false);
     if (!r2.ok) expect(r2.reason).toContain('saves[0].version');
+
+    // 重复 id：digests.frames 以 id 为键，两份同 id 会让其中一份永远"无指纹可比"
+    const r3 = await parseSavePackage(await pkgWith((pkg) => { pkg.saves.push(JSON.parse(JSON.stringify(pkg.saves[0]))); }));
+    expect(r3.ok).toBe(false);
+    if (!r3.ok) expect(r3.reason).toContain('id 与前面的帧重复');
+
+    // 显式但非法的 kind：那条会同时退出 A 与 B 两侧求和，格式问题不能读成账实不符
+    const r4 = await parseSavePackage(await pkgWith((pkg) => {
+      pkg.saves[0].state.operation.financialLogs = [{ id: 'l', description: 'x', cashChange: 1, timestamp: 1, year: 1, quarter: 1, operator: '企业1管理者', kind: 'Flow' }];
+    }));
+    expect(r4.ok).toBe(false);
+    if (!r4.ok) expect(r4.reason).toContain('非法 kind');
   });
 ```
 
@@ -1159,7 +1188,11 @@ import type { FrameAudit } from '../utils/audit';
         // 按**前缀**分派（Task 4 实况）：`unavailable:` 后面可能是 `insecure-context`，也可能是摘要调用
         // 自身失败带出的 errorname，不能只认那一种；空串/缺字段一律算"未计算"，绝不参与比对。
         if (!declared || !declared.startsWith('sha256:')) {
-          digestSkipped.push(`${save.name}：哈希未计算${declared ? `（${declared}）` : '（包内无记录）'}`);
+          // 措辞按规格 §4.4 说人话（不要把内部 token 原样印给老师），但仍由前缀分派、不猜原因：
+          // insecure-context 之外还可能是 bad-digest / error / unknown（Task 4 的 catch 分支）。
+          digestSkipped.push(`${save.name}：${declared === 'unavailable:insecure-context'
+            ? '哈希未计算（非 HTTPS 环境）'
+            : `哈希未计算${declared ? `（${declared.replace('unavailable:', '')}）` : '（包内无记录）'}`}`);
           continue;
         }
         // digestFrame 对畸形帧会**同步**抛（参数求值就在 digestText 之前），Task 6 的结构校验是第一道闸，
@@ -1263,6 +1296,10 @@ export function buildAuditReport(
     '',
     `导出时间：${pkg.exportedAt}`,
     `包指纹：${pkg.digests.package}`,
+    // 两个指纹覆盖的字段不同，报告里必须说清（评审 Task 4 item 4）：逐帧指纹按规格只包
+    // {id,timestamp,version,resetCount,state}，而包壳含整份 SaveFile（name/enterpriseName/createdAt 都在内）——
+    // 只改存档名就会呈现"包指纹不符 + 逐帧全通过"，不写这行它读起来像篡改。
+    `指纹口径：包指纹覆盖整包（含存档名/企业名/createdAt）；逐帧指纹只覆盖 {id,timestamp,version,resetCount,state}，仅改名会动包指纹而不动逐帧指纹。`,
     `帧统计：共 ${summary.total}，通过 ${summary.ok}，不符 ${summary.mismatch}（其中旧档 version<4 的判定 ${summary.legacyMismatch} 条，其"不符"不等于篡改），起算链不完整 ${summary.noAnchor}`,
     `分歧起点：${diverging
       ? `${diverging.restatementCaliber !== 'v4' ? '（该帧 version<4，先排除历史版本缺日志再谈篡改）' : ''}${diverging.saveName}（第${diverging.year}年第${diverging.quarter}季）`
@@ -1274,7 +1311,7 @@ export function buildAuditReport(
   ];
   return {
     text: lines.join('\n'),
-    json: JSON.stringify({ boundary: boundaryLine, exportedAt: pkg.exportedAt, packageDigest: pkg.digests.package, summary, frames: results }, null, 2),
+    json: JSON.stringify({ boundary: boundaryLine, exportedAt: pkg.exportedAt, packageDigest: pkg.digests.package, frameDigests: pkg.digests.frames, summary, frames: results }, null, 2),
   };
 }
 ```
