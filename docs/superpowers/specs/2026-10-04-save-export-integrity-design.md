@@ -22,14 +22,27 @@ README 承诺"跨设备请使用系统内导出的存档/CSV 文件"，但代码
 |---|---|---|
 | 日志总条数 | 75 | — |
 | 普通流水条目 | 66 条，`Σ cashChange = -10M` | 与实际净变动 **-10M 完全相等** → 流水账可信，重演算成立 |
-| 汇总/盘点条目 | 9 条，`Σ cashChange = -16M` | 直接对全部日志求和会**重复计 16M** |
+| 汇总条目 | 9 条，`Σ cashChange = -16M` | 直接对全部日志求和会**重复计 16M** |
 | `newCash === 0` 的日志 | 4 条 | 年末结算日志带占位值，`newCash` 不可用于精确定位 |
 | 单帧快照体积 | 初始 4.1KB / 攒满 4 年 34.3KB | — |
 | 16 份季度存档合计 | **0.54MB** | 距 localStorage 配额很远 → **IndexedDB 迁移不属于本项目需求**（`docs/roadmap.md` §3 P0 的这条判断据此作废） |
 
+> **2026-10-04 勘误（代码穷举后更正，见 §3.1）**：这 9 条汇总并非"盘点+重述"两类，而是 **8 条季度末重述串（每季 -2M，合计 -16M）+ 1 条 `初始现金` 种子日志**。种子日志 `cashChange = 20` 是真实的期初存入，**不是重复计**，应归为 `flow`。因此重演算的锚点由"20M + Σ"改为更干净的 **"Σflow 直接等于该帧现金"**（见 §4.4）。`newCash === 0` 的 4 条也定位到了代码源头（3 个逃逸回填的站点，见 §4.1）。
+
 > 探针脚本为一次性文件（`tests/scratch-*.test.ts`），量完即删，未入库。复现方式在实现计划里以回归测试的形式固化，见 §7。
 
 ## 3. 规格来源与约束
+
+### 3.1 代码穷举结论（2026-10-04，39 个日志产生点）
+
+为把分类做准，对 `src/store/enterpriseStore.ts` 的全部 `FinancialLogRecord` 产生点做了穷举：**39 处**（36 处带 `stepId`，另 3 处不带：`initialState` 的 `初始现金` 种子、`addFinancialLog`、`nextQuarter` 的季度末重述串）。要点：
+
+- 真正属于 `summary` 的**只有 1 处**：`quarterEndLog`（无 `stepId`，`cashChange = finalCashChange` 是整季净额，重述了同季其它条目）。`季初现金盘点`（`stepId: 'q-1'`）的 `cashChange` 本来就是 `0`，归 `flow` 不影响重演算，只是其 `newCash` 是存量而非增量。
+- `addFinancialLog`（约 `:452-474`）**全仓零调用点**，是死 API；本规格直接删除，不为它加 `kind` 参数。
+- `newCash: 0` 出现在 9 个站点，其中 6 个由 `:2641-2647` 的回填修复；**3 个逃逸**：`startProductionLogs`（约 `:2227`）、`installPaymentLogs`（约 `:2273`）、年末市场放弃警告（约 `:2732`，因它在回填块**之后**才 push）。回填必须在 `remappedYearEndLogs`（约 `:2744`）与 `allLogs` 组装（约 `:2745`）之前完成，`financialLogs` 只在 `:2766` 一处进状态。
+- 顺带发现两处**现存错误**，本次一并修：① `OperationCenter.tsx:429-443` 的 `calculateQuarterTotal` 对整季**全部**日志求和，因此今天就在重复计季度末重述串；其排除逻辑用 `description.includes('季初现金盘点')`，而 q-1 的真实文本是 `(...)` 括号串，**该分支是死代码**。② `enterpriseStore.ts` 约 `:2748` 的行内注释写"插入到开工日志之后"，实际 `rdLog` 落在 `materialArrivalLog` 之后、开工日志之前。
+
+### 3.2 来源与约束
 
 1. 课程权威资料 `directions/创新创业实践（2）/《创新实践及科研训练》沙盘模拟仿真开发提示词.md`：单企业设定、**删除所有与其他企业相关的设定**、仅修改广告投放规则。故本规格不得引入任何交易对手或联机对抗。
 2. 经营模拟实证研究的结论：失败模式之一是"市场计算不透明、评分对传答案与 AI 代做缺乏结构性抵抗"（详见 `docs/roadmap.md` §1.1 及其中链接）。本规格第 4.4/4.6 节的取舍直接回应它，但**不假装能解决它**。
@@ -46,19 +59,22 @@ README 承诺"跨设备请使用系统内导出的存档/CSV 文件"，但代码
 kind: 'flow' | 'summary';
 ```
 
-分类依据是**日志的产生位置**，不是描述文本——文本匹配是本仓库已知的脆弱来源（终审批评过 `OperationCenter` 的 `matchOperation` 关键词匹配，同一类问题）。store 内约 36 处 `stepId:` 出现（即日志产生点，实现时以 `grep -n "stepId:" src/store/enterpriseStore.ts` 重新点数为准）需逐条标注，已知必须归为 `summary` 的三族：
+分类依据是**日志的产生位置**，不是描述文本——文本匹配是本仓库已知的脆弱来源（终审批评过 `OperationCenter` 的 `matchOperation` 关键词匹配，同一类问题，§3.1 已列出它今天就在误算）。按穷举结论：
 
-- 季初现金盘点日志（`stepId: 'q-1'`，其 `cashChange` 是**期初存量**而非变动）；
-- 「第X年第Y季度结束现金变动」叙述串（`enterpriseStore.ts:2661` 起）；
-- 年末过渡中的重述型条目（凡 `cashChange` 与其组成项重复者）。
+- **唯一必须归 `summary` 的产生点**：`quarterEndLog`（季度末「第X年第Y季度结束现金变动」重述串，无 `stepId`，`cashChange` 是整季净额）。
+- 其余 38 处全部归 `flow`，包括 `初始现金` 种子（真实期初存入）与 `季初现金盘点`（`cashChange` 本就是 0，不参与求和）。
+- `addFinancialLog` 零调用点，**删除**而非加参数。
 
-同时修掉 4 条 `newCash: 0` 占位：在该 `set()` 计算末尾统一回填真实期末现金。
+同时修掉 3 个逃逸回填的 `newCash: 0` 站点（§3.1）：把 `installPaymentLogs` 与 `startProductionLogs` 纳入 `:2641-2647` 的回填序列，并把年末市场放弃警告移到回填块**之前** push。回填完成后才允许 `remappedYearEndLogs` 拷贝与 `allLogs` 组装。
 
-**不变量（必须由测试长期守着）**：对任意操作序列，`Σ(flow.cashChange) === 期末cash - 期初cash`。期初锚点 = `createFreshState().finance.cash` 起算的 20M，或任一存档帧自带的前值。
+**消费方同步改用 `kind`**（三处，都是把脆弱的文本判断换成字段判断）：
+1. `src/utils/controlTable.ts` 的 `q-18`/`q-19`（跨步骤现金合计）先 `filter(l => l.kind === 'flow')`；
+2. `src/components/OperationCenter.tsx:429-443` `calculateQuarterTotal` 同样只加 `flow`，并删掉 `:402-415` 里那条永不命中的 `季初现金盘点` 文本排除；
+3. `tests/controlTable.test.ts:5-15` 的 `mkLog` 补 `kind` 字段（否则类型检查失败）。
 
-**版本**：字段新增属破坏性变更，`SaveFile.version` 3 → 4。迁移函数（现为 `migrateState`）对缺失 `kind` 的旧帧按"有 `stepId` 且描述不是上述三族 → `flow`，否则 `summary`"推断，并在日志里提示"旧存档已迁移至 v4"。`loadGame` 的版本判断由 `=== 3` 改为 `>= 4`（修掉 `docs/roadmap.md` §5.7 记的那颗雷）。
+**不变量（必须由测试长期守着）**：对任意操作序列与任意存档帧，`Σ(flow.cashChange) === 该帧 finance.cash`。
 
-`src/utils/controlTable.ts` 的导出器同步改：凡按现金汇总取数的格子（`q-18`/`q-19`/`q-20` 及默认分支）一律先 `filter(kind === 'flow')`，废除按描述文本的判断。
+**版本**：字段新增属破坏性变更，`SaveFile.version` 3 → 4。旧存档的一次性兜底规则只有一条（新代码一律显式写 `kind`，不依赖它）：`stepId` 存在 → `flow`；`stepId` 缺失且描述含"季度结束现金变动" → `summary`；`初始现金` → `flow`。`loadGame` 的版本判断由 `=== 3` 改为 `>= 4`（修掉 `docs/roadmap.md` §5.7 记的那颗雷）。
 
 ### 4.2 存档包格式与导出
 
@@ -89,7 +105,7 @@ export interface SavePackage {
 1. **JSON 解析**：失败报「文件不是有效 JSON」。
 2. **结构校验**：`format === 'ie-sandbox-save'`、`packageVersion === 1`、`Array.isArray(saves)`、`current` 含 `finance/production/logistics/marketing/operation` 五域；数值字段做类型与非负检查（`cash`、库存数量、`accountsReceivable` 四档、`year ∈ 1..5`、`quarter ∈ 1..4`）。拒绝畸形结构并**明确指出哪个字段**，不静默"迁移"。文件大小上限 8MB，超出直接拒绝。
 3. **逐帧规范化 + 哈希重算 + 账实重演算**（见 4.4），得出核对结论。
-4. **渲染预览面板**（此时尚未改动任何状态）：包内帧数与时间跨度（最早/最新存档的 `createdAt`）、当前帧的 `第Y年第Q季`、现金、应收账款四档合计、长短期贷款本金合计、重置次数、完整性结论摘要（通过 / 断在第X年第Q季 / 哈希指纹是否匹配 / 锚点不可确认）。
+4. **渲染预览面板**（此时尚未改动任何状态）：包内帧数与时间跨度（最早/最新存档的 `createdAt`）、当前帧的 `第Y年第Q季`、现金、应收账款四档合计、长短期贷款本金合计、重置次数、完整性结论摘要（通过 / 第X年第Q季流水与重述不符 / 帧末现金被改 / 起算链不完整 / 哈希指纹是否匹配）。
 
 预览面板给两个动作，且**默认不覆盖**：
 
@@ -103,11 +119,13 @@ export interface SavePackage {
 **账实重演算（主）**：判定只用**一个**公式，避免两套结论——
 
 ```
-预测现金 = 20 + Σ(该帧 financialLogs 中 kind === 'flow' 的 cashChange)
+预测现金 = Σ(该帧 financialLogs 中 kind === 'flow' 的 cashChange)
 断言：预测现金 === 该帧 finance.cash
 ```
 
-依据是 §2 实测：每帧内嵌的日志是从开局到该帧的**全量累积**，起点恒为课程标准初始现金 20M；`resetGame()` 同时清空日志并重置现金，因此锚点在重置后依然成立（`resetCount` 只作展示，不参与公式）。定位到季度：把上式按 `log.year / log.quarter` 分季求和，与相邻存档快照的现金差逐季对照，第一个不等的季度即报 `第X年第Q季账实不符：流水推算 NM，快照记录 KM（差 ΔM）`。该方法**不依赖密码学，也不依赖 `newCash` 字段**。若某帧的起点不是标准初始态（例如从更早版本迁移而来导致锚点不可确认），报「锚点不可确认」而非「不符」，避免误伤。
+依据是 §2 实测与 §3.1 勘误：每帧内嵌的日志是从开局到该帧的**全量累积**，且 `初始现金`（+20M）本身就是一条 `flow`，因此**不需要任何外部锚点常数**。`resetGame()` 同时重置日志与现金，公式在重置后依旧成立（`resetCount` 只作展示，不参与计算）。
+
+**季度定位**只用单帧数据，不跨帧拼接（帧与帧之间可能来自不同重置局，跨帧差不可靠）：按 `log.year / log.quarter` 分季，逐季比较「该季 `flow` 合计」与「该季 `summary` 重述串合计」——重述串是应用自己结算的整季净额，两者不等即说明该季流水被动过，报 `第X年第Q季账实不符：流水合计 NM，重述 KM`。规则细节：`初始现金` 种子不参与季内比较（否则第 1 季天然不等）；当前季若无重述串（尚未收尾）则跳过该季；若逐季都等而帧末现金仍不平，则单独给一种结论「帧末现金被改（应 NM，实 KM）」而不是硬塞进某个季度。该方法**不依赖密码学，也不依赖 `newCash` 字段**。若某帧连 `初始现金` 种子都缺失（畸形或被删），报「起算链不完整」而非「不符」，避免误伤。
 
 **包哈希（辅，指纹而非结论）**：
 - 规范化序列化：递归按 key 排序、剔除 `undefined`、数字与字符串原样；
@@ -149,9 +167,9 @@ export interface SavePackage {
 
 新增/改动，全部为纯函数或 store 级测试（`npx vitest run`）：
 
-1. **不变量回归**（取代本次探针）：脚本化"短贷 + 贴现 + 连续 8 季推进"，断言 `Σ(flow.cashChange) === cash - 期初`；并断言 `summary` 条目确实存在且被排除在外（用本规格 §2 的实测数字 -16M 作为固定期望）。
-2. `newCash` 不再出现 0 占位：走满一年（含年末结算）后断言所有 `flow` 日志 `newCash !== 0 || cashChange 为 0`。
-3. 导出器：`q-18`/`q-19`/`q-20` 单元格与 `Σ flow` 一致，构造一条 `summary` 日志断言其**不**进入合计。
+1. **不变量回归**（取代本次探针）：脚本化"短贷 + 贴现 + 连续 8 季推进"，断言 `Σ(flow.cashChange) === 该帧 finance.cash`（**无锚点常数**）；并断言该跑法恰好产出 8 条 `summary`（每季一条重述串）、其 `cashChange` 合计为 -16M 且**不**进入求和。
+2. `newCash` 不再有 0 占位：走满一年（含年末结算、自动开工、安装分期、市场放弃警告）后，断言所有 `flow` 日志满足 `newCash !== 0 || cashChange === 0`——这条专防 §3.1 的三个逃逸站点（`startProductionLogs`、`installPaymentLogs`、年末市场放弃警告）。
+3. 导出器与页面两处现金合计都只加 `flow`：构造一条 `summary` 日志，断言控制表 `q-18`/`q-19` 单元格与页面 `calculateQuarterTotal` **都**不受它影响（后者今天会重复计，是本次要修的实际缺陷）。
 4. 规范化 + 哈希：同一 state 两个不同 key 插入顺序的对象必须得到相同哈希（键排序证明）；改 `cash` 一位数字必须改变哈希；`crypto.subtle` 缺失时返回 `unavailable:*` 而不是抛错。
 5. 账实重演算：把一个合法包的某帧 `cash` 手改 +30M，断言审计报出"第X年第Q季账实不符，差 30M"；不改则断言全部通过。
 6. 导入冲突：同 `id` 存档两次导入，列表长度 +2 且第二条带 `-imported-1`，原有条目内容逐字节不变（**默认不覆盖的可执行证明**）。
