@@ -297,7 +297,7 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 
 **Interfaces:**
 - Consumes: Task 1 的 `kind`、`FinancialLogRecord`、`EnterpriseState`
-- Produces: 新口径的 `summary.cashChange` = 自上一条重述串以来的**全部**净变动；类型 `AuditStatus` / `AuditCause` / `RestatementCaliber` / `FrameAudit`；函数 `auditFrame(save: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（按 `timestamp` 升序、不改动入参）、`firstDivergingFrame(results: FrameAudit[]): FrameAudit | null`、`auditSummary(results): { total; ok; mismatch; noAnchor }`、`CAUSE_TEXT`。`FrameAudit` 字段名固定为 `flowRebuilt` / `restatedRebuilt` / `actualCash` / `cause` / `restatementCaliber`，其中两个重建值类型为 `number | null`（`no-anchor` 用 `null`，不用 `NaN`——`NaN` 过 `JSON.stringify` 会变 `null`，让报告与面板读数失真）。`restatementCaliber` 三值语义与 UI 显示义务写在 `src/utils/audit.ts` 的字段注释里，S-T5/S-T7/S-T8 直接展示、不要再读 `SaveFile.version` 自行推断。S-T5/S-T7/S-T8 按此消费。
+- Produces: 新口径的 `summary.cashChange` = 自上一条重述串以来的**全部**净变动；类型 `AuditStatus` / `AuditCause` / `RestatementCaliber` / `FrameAudit`；函数 `auditFrame(save: SaveFile): FrameAudit`、`auditFrames(frames: SaveFile[]): FrameAudit[]`（按 `timestamp` 升序、不改动入参）、`firstDivergingFrame(results: FrameAudit[]): FrameAudit | null`、`auditSummary(results): { total; ok; mismatch; noAnchor; legacyMismatch }`（`legacyMismatch` = `mismatch` 里 `restatementCaliber !== 'v4'` 的条数：老档的"不符"与新档的"不符"必须能被分开说）、`CAUSE_TEXT`、`CALIBER_TEXT`（`RestatementCaliber` 三值的文案，后两条须言明"旧档可能存在未记账的现金变动，不符不等于篡改"）。`FrameAudit` 字段名固定为 `flowRebuilt` / `restatedRebuilt` / `actualCash` / `cause` / `restatementCaliber`，其中两个重建值类型为 `number | null`（`no-anchor` 用 `null`，不用 `NaN`——`NaN` 过 `JSON.stringify` 会变 `null`，让报告与面板读数失真）。`restatementCaliber` 三值语义与 UI 显示义务写在 `src/utils/audit.ts` 的字段注释里，S-T5/S-T7/S-T8 直接展示、不要再读 `SaveFile.version` 自行推断。S-T5/S-T7/S-T8 按此消费。
 
 **为什么要多改这一处 store**（规格 §4.4 第四次更正）：原 `quarterEndLog.cashChange = finalCashChange` 只累加引擎自动项，不含玩家该季主动交易。实测一次带 180M 注资的 5 季存档：A 侧 202 = 现金 202 ✓，B 侧仅 22 ✗。B 式重建要成立，重述串必须先变成"整季全部净变动"。原计划以为"该字段没有别的消费方"，评审 I3 证伪——改口径前仍有两处读 `summary.cashChange`：`src/app/page.tsx` 的最近流水列表与 `src/components/OperationCenter.tsx` 的已完成步骤判定，两处均已按 `kind` 过滤/排除（现为 `src/app/page.tsx:335`、`src/components/OperationCenter.tsx:702`）后才允许口径变更落地。
 
@@ -878,23 +878,85 @@ export async function parseSavePackage(text: string): Promise<PackageParseResult
   for (const domain of STATE_DOMAINS) {
     if (!isRecord(parsed.current[domain])) return { ok: false, reason: `current.${domain} 缺失或类型错误` };
   }
-  const fin = parsed.current.finance as Record<string, unknown>;
-  if (typeof fin.cash !== 'number' || !Number.isInteger(fin.cash) || fin.cash < 0) {
-    return { ok: false, reason: `current.finance.cash 必须是非负整数，实际为 ${JSON.stringify(fin.cash)}` };
-  }
-  if (!Array.isArray(fin.accountsReceivable) || fin.accountsReceivable.length !== 4
-    || !(fin.accountsReceivable as unknown[]).every((v) => typeof v === 'number' && Number.isInteger(v) && v >= 0)) {
-    return { ok: false, reason: 'current.finance.accountsReceivable 必须是 4 个非负整数' };
-  }
-  const op = parsed.current.operation as Record<string, unknown>;
-  if (typeof op.currentYear !== 'number' || op.currentYear < 1 || op.currentYear > 5) {
-    return { ok: false, reason: `current.operation.currentYear 越界：${JSON.stringify(op.currentYear)}` };
-  }
-  if (typeof op.currentQuarter !== 'number' || op.currentQuarter < 1 || op.currentQuarter > 4) {
-    return { ok: false, reason: `current.operation.currentQuarter 越界：${JSON.stringify(op.currentQuarter)}` };
+  const shapeProblem = stateShapeProblem('current', parsed.current);
+  if (shapeProblem) return { ok: false, reason: shapeProblem };
+
+  // **同一套校验也必须逐帧跑在 saves 上**（评审 round-3 new finding #2）：Task 5 从 localStorage 导出的就是这些原始帧、
+  // Task 7 审计与 Task 8 报告印的也是它们。只查 current 会让 `saves[i].finance.cash = 1e999`（`JSON.parse` 得到 Infinity）
+  // 或越界年季直接进面板与报告，而审计对 Infinity 现金会平法判 `ok`（报告 H8.2）。
+  for (let i = 0; i < (parsed.saves as unknown[]).length; i++) {
+    const frame = (parsed.saves as unknown[])[i];
+    if (!isRecord(frame)) return { ok: false, reason: `saves[${i}] 不是对象` };
+    if (typeof frame.id !== 'string' || typeof frame.name !== 'string') {
+      return { ok: false, reason: `saves[${i}] 缺 id/name 或类型错误` };
+    }
+    if (typeof frame.timestamp !== 'number' || !Number.isFinite(frame.timestamp)) {
+      return { ok: false, reason: `saves[${i}].timestamp 必须是有限数字` };
+    }
+    if (typeof frame.version !== 'number' || !Number.isInteger(frame.version) || frame.version < 0) {
+      // version 是审计口径判定的唯一依据（restatementCaliber / migrateState 的 fromVersion 都读它），缺失或非整数即拒
+      return { ok: false, reason: `saves[${i}].version 必须是非负整数，实际为 ${JSON.stringify(frame.version)}` };
+    }
+    if (!isRecord(frame.state)) return { ok: false, reason: `saves[${i}].state 缺失或不是对象` };
+    for (const domain of STATE_DOMAINS) {
+      if (!isRecord((frame.state as Record<string, unknown>)[domain])) {
+        return { ok: false, reason: `saves[${i}].state.${domain} 缺失或类型错误` };
+      }
+    }
+    const frameProblem = stateShapeProblem(`saves[${i}]`, frame.state as Record<string, unknown>);
+    if (frameProblem) return { ok: false, reason: frameProblem };
   }
   return { ok: true, pkg: parsed as unknown as SavePackage };
 }
+```
+
+`stateShapeProblem(label, state)` 就是把原来针对 `current` 的四条字段校验（`finance.cash` 非负整数、`accountsReceivable` 4 个非负整数、`operation.currentYear ∈ 1..5`、`currentQuarter ∈ 1..4`）抽成一个函数，**消息里的前缀用传入的 `label`**——不复制第二份判据，`current` 与每一帧共用同一条规则：
+
+```ts
+const stateShapeProblem = (label: string, state: Record<string, unknown>): string | null => {
+  const fin = state.finance as Record<string, unknown>;
+  if (typeof fin.cash !== 'number' || !Number.isInteger(fin.cash) || fin.cash < 0) {
+    return `${label}.finance.cash 必须是非负整数，实际为 ${JSON.stringify(fin.cash)}`;
+  }
+  if (!Array.isArray(fin.accountsReceivable) || fin.accountsReceivable.length !== 4
+    || !fin.accountsReceivable.every((v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0)) {
+    return `${label}.finance.accountsReceivable 必须是 4 个非负整数`;
+  }
+  const op = state.operation as Record<string, unknown>;
+  if (typeof op.currentYear !== 'number' || op.currentYear < 1 || op.currentYear > 5) {
+    return `${label}.operation.currentYear 越界：${JSON.stringify(op.currentYear)}`;
+  }
+  if (typeof op.currentQuarter !== 'number' || op.currentQuarter < 1 || op.currentQuarter > 4) {
+    return `${label}.operation.currentQuarter 越界：${JSON.stringify(op.currentQuarter)}`;
+  }
+  return null;
+};
+```
+
+Step 1 的测试里再补一条（放在「saves 非数组被拒绝」之后）：
+
+```ts
+  it('saves 某一帧现金为 Infinity 或 version 缺失时被拒，原因点名是哪一帧', async () => {
+    // validPackage() 的 saves 是空数组，这里自己塞一帧进去（帧的形状照 Task 5 的 SaveFile）
+    const frameOf = () => ({
+      id: 'f1', name: '帧1', enterpriseName: '企业1', timestamp: 1, resetCount: 0, version: 4,
+      createdAt: 'x', state: JSON.parse(JSON.stringify(createFreshState())),
+    });
+    const pkgWith = async (mutate: (pkg: any) => void) => {
+      const pkg = JSON.parse(await validPackage());
+      pkg.saves = [frameOf()];
+      mutate(pkg);
+      return JSON.stringify(pkg);
+    };
+
+    const r1 = await parseSavePackage(await pkgWith((pkg) => { pkg.saves[0].state.finance.cash = 1e999; }));
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.reason).toContain('saves[0].finance.cash');
+
+    const r2 = await parseSavePackage(await pkgWith((pkg) => { delete pkg.saves[0].version; }));
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.reason).toContain('saves[0].version');
+  });
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -915,12 +977,11 @@ git commit -m "feat(save): 存档包解析与结构校验，畸形输入点名�
 
 **Files:**
 - Modify: `src/store/enterpriseStore.ts`（`importSaveFiles`、`applyImportedState` 两个 action）
-- Modify: `src/utils/audit.ts`（新增 `CALIBER_TEXT` 文案表，供面板与 Task 8 报告同源）
 - Modify: `src/components/SaveLoadPanel.tsx`（文件入口、预览面板、两个动作）
 - Test: `tests/saveImport.test.ts`（新建）
 
 **Interfaces:**
-- Consumes: Task 3 `auditFrames`/`auditSummary`/`FrameAudit.restatementCaliber`、Task 4 `digestFrame`、Task 5 `SavePackage`、Task 6 `parseSavePackage`
+- Consumes: Task 3 `auditFrames`/`auditSummary`（含 `legacyMismatch`）/`CAUSE_TEXT`/`CALIBER_TEXT`/`FrameAudit.restatementCaliber`、Task 4 `digestFrame`、Task 5 `SavePackage`、Task 6 `parseSavePackage`
 - Produces: store 上 `importSaveFiles(saves: SaveFile[]): { added: number; renamed: number }`、`applyImportedState(state: EnterpriseState, fromVersion: number): void`
 
 - [ ] **Step 1: 写失败测试**
@@ -1033,21 +1094,24 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
 
 - [ ] **Step 4: UI 编排**
 
-先在 `src/utils/audit.ts` 的 `CAUSE_TEXT` 之后加文案表（Task 8 的报告与本面板共用，别再抄第二份）：
+`CALIBER_TEXT` 由 Task 3 与 `CAUSE_TEXT` 并列提供（见本任务 Interfaces 的 Produces），本任务**直接 import、不再新建**：
 
 ```ts
-// 与 FrameAudit.restatementCaliber 的字段注释一一对应；UI 与报告只取这里的文案。
+// src/utils/audit.ts 已有（Task 3）：与 RestatementCaliber 三值一一对应，后两条须言明
+// "旧档可能存在未记账的现金变动，不符不等于篡改"（评审 round-3 new finding #1）。
 export const CALIBER_TEXT: Record<RestatementCaliber, string> = {
   'v4': '重述串为新口径，可作金额证据',
-  'legacy-converted': '旧档重述串已换算为新口径，判定仍只依据流水',
-  'legacy-unconverted': '旧口径链，不作金额结论',
+  'legacy-converted': '旧档（version<4）：重述串已换算，判定只依据流水',
+  'legacy-unconverted': '旧档（version<4）：判定只依据流水；该版本可能存在未记账的现金变动，"不符"不等于篡改',
 };
 ```
+
+若 Task 3 落地的文案与上面不一致，**以 `src/utils/audit.ts` 为准**并在报告里说明差异——判据与文案都只许住一处。
 
 `SaveLoadPanel.tsx` 加：
 
 ```tsx
-// 面板顶部 import：文案表与判据同源（见 Step 3 的 audit.ts），UI 只照抄，
+// 面板顶部 import：文案表与判据同源（Task 3 的 audit.ts），UI 只照抄，
 // 绝不再自行读 SaveFile.version 推断（一条规则写两处就是版本漂移的起点）
 import { auditFrames, auditSummary, CAUSE_TEXT, CALIBER_TEXT, firstDivergingFrame } from '../utils/audit';
 import type { FrameAudit } from '../utils/audit';
@@ -1078,8 +1142,10 @@ import type { FrameAudit } from '../utils/audit';
       const results = auditFrames(frames);
       const mismatches = results.filter(r => r.status !== 'ok')
         .map(r => r.status === 'no-anchor'
+          // no-anchor 不附口径文案：那一档说的是"B 侧读数的身份"，而这一帧两侧都没算成，
+          // 附上「重述串为新口径，可作金额证据」会变成自相矛盾的印面（评审 round-3 new finding #3）
           ? `${r.saveName}：起算链不完整（缺期初现金种子），本帧现金 ${r.actualCash}M`
-          : `${r.saveName}（第${r.year}年第${r.quarter}季）：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），本帧现金 ${r.actualCash}M`);
+          : `${r.saveName}（第${r.year}年第${r.quarter}季）：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），本帧现金 ${r.actualCash}M；${CALIBER_TEXT[r.restatementCaliber]}`);
       // 包内定位：第一处不平的帧才是"分歧起点"，其余帧的不平是它的下游后果（Task 3 定的判据）
       const diverging = firstDivergingFrame(results);
       const digestMismatch: string[] = [];
@@ -1135,7 +1201,7 @@ git commit -m "feat(save): 存档包导入预览与非覆盖落库，暂停态�
 - Test: `tests/audit.test.ts`（追加报告文本断言）
 
 **Interfaces:**
-- Consumes: `FrameAudit`、`SavePackage`、既有 Blob 下载写法
+- Consumes: `FrameAudit`、`CAUSE_TEXT`、`CALIBER_TEXT`、`firstDivergingFrame`、`auditSummary`（含 `legacyMismatch`）、`SavePackage`、既有 Blob 下载写法
 - Produces: `buildAuditReport(pkg: SavePackage, results: FrameAudit[], boundaryLine: string): { json: string; text: string }`
 
 - [ ] **Step 1: 写失败测试**
@@ -1151,6 +1217,9 @@ import { buildAuditReport } from '../src/utils/audit';
     const { text, json } = buildAuditReport(pkg, [auditFrame(frame())], boundary);
     expect(text.split('\n')[0]).toBe(boundary);
     expect(text).toContain('帧s1');
+    // 新档帧：统计行必须把"旧档判定"单列出来（评审 round-3 new finding #1 的印面验收）
+    expect(text).toContain('其中旧档 version<4 的判定 0 条');
+    expect(text).toContain('重述串为新口径');
     expect(JSON.parse(json).boundary).toBe(boundary);
     expect(JSON.parse(json).packageDigest).toBe('sha256:deadbeef00001111');
   });
@@ -1171,17 +1240,21 @@ export function buildAuditReport(
 ): { json: string; text: string } {
   const summary = auditSummary(results);
   const diverging = firstDivergingFrame(results);
+  // no-anchor 帧不附口径文案（理由见 Task 7 的 mismatches 映射处）
+  const caliberNote = (r: FrameAudit) => (r.status === 'no-anchor' ? '' : `；${CALIBER_TEXT[r.restatementCaliber]}`);
   const lines = [
     boundaryLine,
     '',
     `导出时间：${pkg.exportedAt}`,
     `包指纹：${pkg.digests.package}`,
-    `帧统计：共 ${summary.total}，通过 ${summary.ok}，不符 ${summary.mismatch}，起算链不完整 ${summary.noAnchor}`,
-    `分歧起点：${diverging ? `${diverging.saveName}（第${diverging.year}年第${diverging.quarter}季）` : '未发现账实分歧'}`,
+    `帧统计：共 ${summary.total}，通过 ${summary.ok}，不符 ${summary.mismatch}（其中旧档 version<4 的判定 ${summary.legacyMismatch} 条，其"不符"不等于篡改），起算链不完整 ${summary.noAnchor}`,
+    `分歧起点：${diverging
+      ? `${diverging.restatementCaliber !== 'v4' ? '（该帧 version<4，先排除历史版本缺日志再谈篡改）' : ''}${diverging.saveName}（第${diverging.year}年第${diverging.quarter}季）`
+      : '未发现账实分歧'}`,
     '',
     ...results.map((r) => r.status === 'ok'
-      ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${r.actualCash}M；${CALIBER_TEXT[r.restatementCaliber]}）`
-      : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] ${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${r.flowRebuilt}M，按重述串重建 ${r.restatedRebuilt}M，帧内现金 ${r.actualCash}M；${CALIBER_TEXT[r.restatementCaliber]}）`),
+      ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${r.actualCash}M${caliberNote(r)}）`
+      : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] ${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${r.flowRebuilt}M，按重述串重建 ${r.restatedRebuilt}M，帧内现金 ${r.actualCash}M${caliberNote(r)}）`),
   ];
   return {
     text: lines.join('\n'),
