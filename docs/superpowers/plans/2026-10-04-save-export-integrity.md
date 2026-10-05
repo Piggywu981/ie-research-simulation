@@ -1209,8 +1209,14 @@ import type { FrameAudit } from '../utils/audit';
         .map(r => r.status === 'no-anchor'
           // no-anchor 不附口径文案：那一档说的是"B 侧读数的身份"，而这一帧两侧都没算成，
           // 附上「本帧按 v4 口径判定…」会变成自相矛盾的印面（评审 round-3 new finding #3）
-          ? `${r.saveName}：起算链不完整（缺期初现金种子），本帧现金 ${r.actualCash}M`
-          : `${r.saveName}（第${r.year}年第${r.quarter}季）：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），本帧现金 ${r.actualCash}M；${CALIBER_TEXT[r.restatementCaliber]}`);
+          ? `${r.saveName}：起算链不完整（缺期初现金种子），本帧现金 ${money(r.actualCash)}`
+          : `${r.saveName}（第${r.year}年第${r.quarter}季）：账实不符（${CAUSE_TEXT[r.cause ?? 'both']}），`
+            + `流水重演算 ${money(r.flowRebuilt)} / 帧末现金 ${money(r.actualCash)}；${CALIBER_TEXT[r.restatementCaliber]}`);
+      // money() 而不是裸 `${r.actualCash}M`：no-anchor 与"求和溢出"这两支里 flowRebuilt/restatedRebuilt
+      // **就是** null（audit.ts 的 finiteOr，规格 §4.4「null 而非 NaN」），直接插值印出来是 "nullM"。
+      // 帧末现金那一支 Task 6 已拦在非负整数外（isNonNegativeInteger），到这里不会真是 NaN/Infinity，
+      // money() 仍兜一层：印面守卫不该依赖"上游恰好拦住了"，上游校验口径是可变的。
+      // 顺带带上重演算读数本身——只报"帧末现金 168M"老师看不出差在哪，而 A 侧读数是判据的直接证据。
       // 包内定位：第一处不平的帧才是"分歧起点"，其余帧的不平是它的下游后果（Task 3 定的判据）
       const diverging = firstDivergingFrame(results);
       const digestMismatch: string[] = [];
@@ -1229,13 +1235,23 @@ import type { FrameAudit } from '../utils/audit';
         }
         // digestFrame 对畸形帧会**同步**抛（参数求值就在 digestText 之前），Task 6 的结构校验是第一道闸，
         // 这里再兜一层：指纹算不出来只能记成"未计算"，不能让它把整个预览打挂、更不能印成"不一致"。
+        // 同一句"不能印成不一致"也管**本侧重算出来的值**（Task 7 实施时补的守卫）：导入方若在非 HTTPS
+        // 环境打开（离线 file://、局域网 http://），crypto.subtle 缺席，重算给的是 `unavailable:*`，
+        // 拿它去比包里的 `sha256:` 必然不等 → 正常存档被报成篡改。那一档归"本机算不出"，不是不符。
         try {
-          if (await digestFrame(save) !== declared) digestMismatch.push(`${save.name} 的指纹与包内记录不一致`);
+          const recomputed = await digestFrame(save);
+          if (!isComparableDigest(recomputed)) digestSkipped.push(`${save.name}：哈希无法比对（本机算不出摘要：…）`);
+          else if (recomputed !== declared) digestMismatch.push(`${save.name} 的指纹与包内记录不一致`);
         } catch {
           digestSkipped.push(`${save.name}：哈希无法计算（帧结构异常）`);
+
         }
       }
-      const caliberNotes = [...new Set(results.map(r => CALIBER_TEXT[r.restatementCaliber]))];
+      const caliberNotes = Array.from(new Set(results.map(r => CALIBER_TEXT[r.restatementCaliber])));
+      // Array.from 而非 [...new Set(...)]：tsconfig 是 target es5 且未开 downlevelIteration，
+      // 展开 Set 直接报 TS2802（实测：`tsc --noEmit --project tsconfig.json` 对 `[...new Set([1])]` 给出
+      // "Type 'Set<number>' can only be iterated through when using the '--downlevelIteration' flag"），
+      // 与 saveDigest.ts 里 typed array 的同一条约束（见该文件 hex 拼接处注释）。
       setPending({ pkg, summary: auditSummary(results), mismatches, digestMismatch, digestSkipped, diverging, caliberNotes });
     } finally {
       setBusy(false);
@@ -1244,6 +1260,14 @@ import type { FrameAudit } from '../utils/audit';
 ```
 
 预览面板（`pending` 非空时渲染，此时**未改动任何状态**）显示：帧数与时间跨度、当前帧 `第Y年第Q季 / 现金 / 应收合计 / 长短期贷款本金合计 / 重置次数`、`mismatches`（红字，**不阻断**）、`digestMismatch`（红字，**不阻断**）、`digestSkipped`（灰字：「哈希未计算」的每一帧与原因，规格 §4.4 要求非安全上下文必须显式说明、绝不静默跳过）、`diverging`（非 null 时一行「分歧始于：X（第Y年第Q季）」，null 时「未发现账实分歧」）、`caliberNotes`（灰字小字，逐条列出包内出现过的 B 侧读数身份）。两个动作按钮：
+
+> **重置次数这一行的来源要说清**（Task 7 实施时定的口径）：`resetCount` 是 **SaveFile** 上的字段
+> （`types/enterprise.ts:299-308`），`EnterpriseState` 里根本没有它，所以 `pkg.current` 给不出重置次数，
+> 上面那句"当前帧…重置次数"只能落到**包内最近一帧**（按 timestamp、同毫秒按 id，与 auditFrames 同一条全序）
+> 的 `resetCount`；`pkg.saves` 为空时印「—」而不是 0——0 是"重置过 0 次"的断言，而包压根没带这个数。
+> 合成帧里的 `resetCount: 0` 只喂指纹与类型，不许进印面。又因 Task 6 的结构校验**不**覆盖 `resetCount`
+> （残留项），印面前过一次 `Number.isFinite`。同一条守卫也用在贷款本金合计上：`finance.loans` 的条目
+> 只被校验为"是对象"，`principal` 的取值没人管，出现非有限值时整项印「—（数据异常）」而不是静默当 0 加进合计。
 
 - 「仅加入存档列表」（默认样式）→ `const r = importSaveFiles(pkg.saves)` → `setValidationError(null)` + 关闭面板；暂停时 `disabled` 并给可见说明。
 - 「设为当前进度」→ `applyImportedState(pkg.current, pkg.app.saveVersion)` → 关闭面板；同样受暂停门控。
