@@ -216,7 +216,9 @@ const initialState: EnterpriseState = {
 // v1 的原料到货季度为 1~4 循环值（跨年即错），在途订单直接作废并提示。
 // fromVersion 是那一帧存档自己声明的格式版本：必填，且缺省/非法一律按最旧的 0 处理——
 // 宁可多做一次旧口径换算（换算本身对已与新口径一致的串是幂等的），也不能漏掉需要重建的旧档。
-const migrateState = (s: EnterpriseState, fromVersion: number | undefined): EnterpriseState => {
+// 导出给 importSaveFiles / applyImportedState 复用（Task 7 决定 #2）：导入侧的迁移与 loadGame 必须走
+// 同一条链、同一个 fromVersion 口径，另写一份"导入用的迁移"就是版本漂移的起点。
+export const migrateState = (s: EnterpriseState, fromVersion: number | undefined): EnterpriseState => {
   const state: EnterpriseState = JSON.parse(JSON.stringify(s));
   state.isPaused = false;
 
@@ -356,6 +358,13 @@ export const useEnterpriseStore = create<{
   loadGame: (saveFile: SaveFile) => void;
   resetGame: () => void;
   getSaveFiles: () => SaveFile[];
+  // 导入存档包（规格 §4.3）：两个动作各自的落点不同，且**默认不覆盖**——
+  // importSaveFiles 只并入存档列表（同 id 冲突改名追加），applyImportedState 只换当前屏（不自动入列表）。
+  // 返回 added/renamed 让 UI 说得出"到底动了哪几帧"，而不是含糊的一句"导入成功"。
+  importSaveFiles: (saves: SaveFile[]) => { added: number; renamed: number };
+  // fromVersion 由调用方给出（整包当前屏用 pkg.app.saveVersion，逐帧用各自的 save.version）：
+  // 旧档重述串的口径换算必须知道原版本才决定要不要重建，见 migrateState
+  applyImportedState: (state: EnterpriseState, fromVersion: number) => void;
 }>((set, get) => ({
   state: initialState,
   saveFiles: [],
@@ -453,6 +462,53 @@ export const useEnterpriseStore = create<{
     get().addOperationLog('加载存档', saveFile.version >= SAVE_FORMAT_VERSION
       ? `加载存档：${saveFile.name}`
       : `加载存档：${saveFile.name}（旧版存档已迁移至v4，建议重置开新局）`);
+  },
+
+  // 导入：把包里的历史帧并入存档列表（规格 §4.3「仅加入存档列表」，当前屏不变）。
+  // 只读动作（文件选择、预览）在暂停态照常可用，唯独这一处落库要过暂停门（§7.10 定死的取舍）。
+  importSaveFiles: (saves) => {
+    if (get().state.isPaused) {
+      set({ validationError: '运营已暂停，请先继续运营再导入' });
+      return { added: 0, renamed: 0 };
+    }
+    const existing = get().getSaveFiles();
+    // 冲突判定按**合并后**的 id 集合走，而不是逐个 vs 原列表：一批里也可能带进两份同 id 的帧，
+    // 只在 taken 里放原列表会让第二条覆盖第一条——"默认不覆盖"就在这一步破功。
+    // 包内帧 id 不会重复（parseSavePackage 的 seenFrameIds 会先拒掉，规格 §4.3），这里兜的是
+    // 调用方绕过解析器直接传数组的情形，不是把那条校验再实现一遍。
+    const taken = new Set(existing.map((f) => f.id));
+    let renamed = 0;
+    const toAdd = saves.map((save) => {
+      // 每帧按**自己**的 version 迁移：整包只有一个 app.saveVersion，而包里混装的旧帧各自不同
+      // （Task 7 决定 #1）。深拷贝在 migrateState 内部（JSON 往返），落库的字节与内存对象同源。
+      if (!taken.has(save.id)) {
+        taken.add(save.id);
+        return { ...save, state: migrateState(save.state, save.version) };
+      }
+      // 同 id 不替换、改名追加（规格 §4.3）：取首个空闲的 -imported-N，原有那一帧一个字节都不动
+      let n = 1;
+      while (taken.has(`${save.id}-imported-${n}`)) n++;
+      const id = `${save.id}-imported-${n}`;
+      taken.add(id);
+      renamed++;
+      return { ...save, id, state: migrateState(save.state, save.version) };
+    });
+    const merged = [...toAdd, ...existing];
+    localStorage.setItem('enterpriseSaveFiles', JSON.stringify(merged));
+    set({ saveFiles: merged });
+    get().addOperationLog('导入存档', `新增 ${toAdd.length} 份（其中改名追加 ${renamed} 份），未覆盖任何原有存档`);
+    return { added: toAdd.length, renamed };
+  },
+
+  // 导入：只把包内 current 换成当前屏，**不**自动并入列表（玩家自己决定要不要再手动存档，规格 §4.3）
+  applyImportedState: (imported, fromVersion) => {
+    if (get().state.isPaused) {
+      set({ validationError: '运营已暂停，请先继续运营再导入' });
+      return;
+    }
+    set({ state: migrateState(imported, fromVersion) });
+    get().addOperationLog('导入存档', `设为当前进度：第${imported.operation.currentYear}年第${imported.operation.currentQuarter}季`
+      + (fromVersion >= SAVE_FORMAT_VERSION ? '' : '（旧版存档已迁移至v4，建议重置开新局）'));
   },
 
   // 重置游戏
