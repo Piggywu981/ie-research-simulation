@@ -364,7 +364,8 @@ export const useEnterpriseStore = create<{
   importSaveFiles: (saves: SaveFile[]) => { added: number; renamed: number };
   // fromVersion 由调用方给出（整包当前屏用 pkg.app.saveVersion，逐帧用各自的 save.version）：
   // 旧档重述串的口径换算必须知道原版本才决定要不要重建，见 migrateState
-  applyImportedState: (state: EnterpriseState, fromVersion: number) => void;
+  // resetCount 可选，取包内最近一帧的（与预览同一处）；不给就沿用本机计数，包里没有历史帧时正是如此
+  applyImportedState: (state: EnterpriseState, fromVersion: number, resetCount?: number) => void;
 }>((set, get) => ({
   state: initialState,
   saveFiles: [],
@@ -485,28 +486,44 @@ export const useEnterpriseStore = create<{
         taken.add(save.id);
         return { ...save, state: migrateState(save.state, save.version) };
       }
-      // 同 id 不替换、改名追加（规格 §4.3）：取首个空闲的 -imported-N，原有那一帧一个字节都不动
+      // 同 id 不替换、改名追加（规格 §4.3）：取首个空闲的 -imported-N，原有那一帧一个字节都不动。
+      // 显示名一并标注：name 不在逐帧指纹的输入里（saveDigest.ts 只覆盖五个内容字段），
+      // 而控制表按 (年,季) + 最大 timestamp 选帧，两帧同名到秒时用户在列表里分不出哪份是被追加的（评审 Task 7 finding 3）。
       let n = 1;
       while (taken.has(`${save.id}-imported-${n}`)) n++;
       const id = `${save.id}-imported-${n}`;
       taken.add(id);
       renamed++;
-      return { ...save, id, state: migrateState(save.state, save.version) };
+      return { ...save, id, name: `${save.name}（导入${n}）`, state: migrateState(save.state, save.version) };
     });
     const merged = [...toAdd, ...existing];
-    localStorage.setItem('enterpriseSaveFiles', JSON.stringify(merged));
+    // 配额写满必须说出来（评审 Task 7 finding 2）：解析层允许到 8MB，而源配额约 5MB——
+    // 一个**合法**的大包会在 setItem 抛 QuotaExceededError。抛点在写入之前，所以原列表一个字节没动；
+    // 但若不接住，用户只会看到控制台报错、预览还开着，规格 §6 要求把原因说出来。
+    try {
+      localStorage.setItem('enterpriseSaveFiles', JSON.stringify(merged));
+    } catch (error) {
+      const name = error instanceof Error ? error.name : '未知错误';
+      set({ validationError: `写入本地存储失败（${name}，多半是空间已满）：本次导入未落库，原有存档未改动` });
+      return { added: 0, renamed: 0 };
+    }
     set({ saveFiles: merged });
     get().addOperationLog('导入存档', `新增 ${toAdd.length} 份（其中改名追加 ${renamed} 份），未覆盖任何原有存档`);
     return { added: toAdd.length, renamed };
   },
 
   // 导入：只把包内 current 换成当前屏，**不**自动并入列表（玩家自己决定要不要再手动存档，规格 §4.3）
-  applyImportedState: (imported, fromVersion) => {
+  // resetCount 可选：与预览"重置次数"取的是同一帧（包内最近一帧），不传就沿用本机计数——
+  // loadGame 也做同样的事（:455-460），否则预览印 3 而文件名写 重置0，同一份进度两个说法（评审 Task 7 finding 4）。
+  applyImportedState: (imported, fromVersion, resetCount) => {
     if (get().state.isPaused) {
       set({ validationError: '运营已暂停，请先继续运营再导入' });
       return;
     }
-    set({ state: migrateState(imported, fromVersion) });
+    set({
+      state: migrateState(imported, fromVersion),
+      ...(typeof resetCount === 'number' && Number.isFinite(resetCount) ? { resetCount } : {}),
+    });
     get().addOperationLog('导入存档', `设为当前进度：第${imported.operation.currentYear}年第${imported.operation.currentQuarter}季`
       + (fromVersion >= SAVE_FORMAT_VERSION ? '' : '（旧版存档已迁移至v4，建议重置开新局）'));
   },

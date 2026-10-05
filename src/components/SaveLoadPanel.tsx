@@ -55,13 +55,16 @@ export const isComparableDigest = (value: string | undefined): boolean =>
  *  失败带出的 bad-digest / 某个 error name，不能只认那一种。空串/缺字段一律算「未计算」，绝不参与比对。
  *  措辞按规格 §4.4 说人话（不把内部 token 原样印给老师），但仍不猜原因。 */
 export const digestSkipNote = (saveName: string, declared: string | undefined): string | null => {
-  if (isComparableDigest(declared)) return null;
+  // 非字符串一律按"包内无可用声明"处理：`digests.frames` 是外部文件的对象，原型链上的
+  // toString/constructor 之类如果被当值读出来，下一行 declared.replace 会抛 TypeError，
+  // 预览就会印成「读取失败」而不是契约里的「哈希未计算（包内无记录）」（评审 Task 7 finding 1）。
+  if (typeof declared === 'string' && isComparableDigest(declared)) return null;
   if (declared === 'unavailable:insecure-context') return `${saveName}：哈希未计算（非 HTTPS 环境）`;
-  const reason = declared ? declared.replace('unavailable:', '') : '';
+  const reason = typeof declared === 'string' && declared ? declared.replace('unavailable:', '') : '';
   return `${saveName}：哈希未计算${reason ? `（${reason}）` : '（包内无记录）'}`;
 };
 
-// 预览结论（此刻**尚未改动任何状态**，规格 §4.3 第 4 步）
+// 预览结论（此刻**尚未改动存档与当前屏**，规格 §4.3 第 4 步；唯一的 store 写是 validationError 那条消息字段）
 interface ImportPreview {
   pkg: SavePackage;
   summary: ReturnType<typeof auditSummary>;
@@ -72,6 +75,8 @@ interface ImportPreview {
   caliberNotes: string[];
   spanText: string;
   resetCountText: string;
+  // 「设为当前进度」要落的那个计数，与 resetCountText 同一个来源、同一道有限性守卫（不传则本机计数不动）
+  resetCountValue: number | null;
 }
 
 const SaveLoadPanel: React.FC = () => {
@@ -138,8 +143,9 @@ const SaveLoadPanel: React.FC = () => {
     }
   };
 
-  // 导入存档包：读文件 + 校验 + 逐帧重演算 + 指纹比值，**只算不改**（规格 §4.3 前 3 步）。
-  // 结论一律先攒在 pending 里，落库要由用户在预览上明确点其中一个动作。
+  // 导入存档包：读文件 + 校验 + 逐帧重演算 + 指纹比值。落库必须由用户在预览上明确点其中一个动作；
+  // 这一路径上唯一的 store 写是 validationError 那条**消息字段**（清掉上一次的提示），
+  // 存档列表、当前屏、本地存储在预览阶段一律不动（规格 §4.3）。
   const handleFilePicked = async (file: File | undefined) => {
     if (!file) return;
     setBusy(true);
@@ -164,7 +170,13 @@ const SaveLoadPanel: React.FC = () => {
       const digestMismatch: string[] = [];
       const digestSkipped: string[] = [];
       for (const save of frames) {
-        const declared = pkg.digests.frames[save.id];
+        // 只读**自有**键：`digests.frames` 来自 JSON.parse，`__proto__` 是自有数据属性，但 id 为
+        // constructor/toString/hasOwnProperty 这类原型链上的名字时，点号读出来是 Object.prototype 或函数，
+        // 于是 declared.replace(...) 抛 TypeError，预览会印成「读取失败」而不是契约要求的「哈希未计算（包内无记录）」。
+        // 与 Task 6 在 savePackage.ts 用 Set 挡同一类危害是同一条道理（评审 Task 7 finding 1）。
+        const declared = Object.prototype.hasOwnProperty.call(pkg.digests.frames, save.id)
+          ? pkg.digests.frames[save.id]
+          : undefined;
         const skipNote = digestSkipNote(save.name, declared);
         if (skipNote) { digestSkipped.push(skipNote); continue; }
         // digestFrame 对**没经过解析器**的帧会同步抛（参数求值就在 digestText 之前），Task 6 的结构
@@ -182,9 +194,10 @@ const SaveLoadPanel: React.FC = () => {
       }
       const caliberNotes = Array.from(new Set(results.map((r) => CALIBER_TEXT[r.restatementCaliber])));
       // 时间跨度取 createdAt（规格 §4.3），按 timestamp 定最早/最新、同毫秒按 id 兜底：
-      // 与 auditFrames 同一条全序，但不排序、不复制整包
+      // 兜底必须与 audit.ts:124 用同一个 localeCompare——`a.id < b.id` 对大小写与 `_` 的排序和它不同
+      // （实测 56 对 id 里 20 对不一致），只在两帧同毫秒时可观察，但那决定了 span 与重置次数取哪一帧（评审 Task 7 finding 5）。
       const byTimeThenId = (a: SaveFile, b: SaveFile) =>
-        (a.timestamp - b.timestamp) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        (a.timestamp - b.timestamp) || a.id.localeCompare(b.id);
       let earliest = frames[0];
       let latest = frames[0];
       for (const save of frames) {
@@ -196,9 +209,13 @@ const SaveLoadPanel: React.FC = () => {
         : '包内无历史帧（仅当前屏）';
       // 重置次数是 **SaveFile** 的字段、不在 current 里，只能取最近那一帧的；没有历史帧就给「—」而不是 0
       const resetCountText = pkg.saves.length > 0 ? readNumber(latest.resetCount) : '—';
+      // 印面与"设为当前进度"要落的是同一个数：同一个 latest 帧、同一道 Number.isFinite 判据
+      const resetCountValue = pkg.saves.length > 0
+        && typeof latest.resetCount === 'number' && Number.isFinite(latest.resetCount)
+        ? latest.resetCount : null;
       setPending({
         pkg, summary: auditSummary(results), mismatches, digestMismatch, digestSkipped,
-        diverging, caliberNotes, spanText, resetCountText,
+        diverging, caliberNotes, spanText, resetCountText, resetCountValue,
       });
     } catch (error) {
       // parseSavePackage 自己不抛（规格 §4.3），这一层兜的是 file.text() 读失败（文件被移走/权限）
@@ -214,6 +231,9 @@ const SaveLoadPanel: React.FC = () => {
   // 动作一：仅加入存档列表（默认，当前屏不变）
   const handleImportToList = () => {
     if (!pending) return;
+    // 返回的 {added, renamed} 不在这里印：写成功的话面板随即关闭、列表当场可见，
+    // 写失败的话 store 已把原因放进 validationError（同一处不会既报成功又报失败），
+    // 逐帧数目由「导入存档」那条操作日志说（评审 Task 7 finding 6，取舍记在此免得下次又当遗漏）
     importSaveFiles(pending.pkg.saves);
     setValidationError(null);
     setPending(null);
@@ -224,7 +244,7 @@ const SaveLoadPanel: React.FC = () => {
   // 动作二：设为当前进度（不自动并入列表，规格 §4.3）
   const handleApplyToCurrent = () => {
     if (!pending) return;
-    applyImportedState(pending.pkg.current, pending.pkg.app.saveVersion);
+    applyImportedState(pending.pkg.current, pending.pkg.app.saveVersion, pending.resetCountValue ?? undefined);
     setValidationError(null);
     setPending(null);
     setIsOpen(false);
@@ -341,6 +361,13 @@ const SaveLoadPanel: React.FC = () => {
                 完整性：共 {pending.summary.total} 帧，通过 {pending.summary.ok}，
                 账实不符 {pending.summary.mismatch}（其中旧档 {pending.summary.legacyMismatch}），
                 起算链不完整 {pending.summary.noAnchor}
+              </div>
+
+              {/* 「非覆盖」只保住了存档列表的字节，保不住派生的控制表：控制表按 (年,季) 取最大 timestamp
+                  选帧，一份 wall-clock 更晚的外来帧会静接管同 (年,季) 的格子（评审 Task 7 finding 3）。
+                  所以这里必须把话说在前面，并给被追加改名的那一帧标上「（导入N）」。 */}
+              <div className="text-xs text-gray-500">
+                导入的历史帧会参与运行控制表与统计取数；与本机同 id 的帧会改名为「-imported-N」并加标注，原有存档不变。
               </div>
 
               {/* 红字都是**提示**，不阻断导入（规格 §4.4：客户端做不到强防篡改，结论给人看不是拿来拦人） */}

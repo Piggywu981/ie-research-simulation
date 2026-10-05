@@ -7,7 +7,7 @@
 //    Task 6 的结构校验口径内（残留项），于是"怎么把读数印成人话"本身就是会出错的地方：
 //    `${null}M` 会印出 "nullM"，`${NaN}` 会印出 "NaN"，读的人是教师。这几条纯格式化支路
 //    从组件里导出来测（本仓库测试环境是 node、无 jsdom，规格 §7「全部为纯函数或 store 级测试」）。
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshState, migrateState, useEnterpriseStore } from '../src/store/enterpriseStore';
 import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile } from '../src/types/enterprise';
 import { auditFrame, CAUSE_TEXT, CALIBER_TEXT, type FrameAudit } from '../src/utils/audit';
@@ -207,5 +207,69 @@ describe('预览印面守卫（无 jsdom，只测纯格式化支路）', () => {
     // 本侧重算在缺 crypto.subtle 的环境给的就是这一支：拿它去比包里的 sha256 必然不等，
     // 于是"换浏览器/离线打开"的正常导入被印成「指纹不一致」——所以两侧都要过这道闸
     expect(isComparableDigest('unavailable:bad-digest')).toBe(false);
+  });
+});
+
+describe('导入落库的失败面与改名标注（评审 Task 7 finding 2/3/4）', () => {
+  beforeEach(() => {
+    useEnterpriseStore.setState({ state: createFreshState(), validationError: null });
+    localStorage.removeItem('enterpriseSaveFiles');
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('localStorage 写满时：本次导入不落库、原存档逐字节不变、原因说得出「本地存储」', () => {
+    // 解析层允许到 8MB 而源配额约 5MB，所以"合法的大包"会在 setItem 抛 QuotaExceededError。
+    // 抛点在写入之前，原列表不会残半截；但必须把原因说出来（规格 §6），且内存列表也不能先换掉——
+    // 否则刷新前是一套、刷新后是另一套。
+    store().importSaveFiles([frame('s1', 100)]);
+    const bytesBefore = rawStored();
+    const err = new Error('exceeded');
+    err.name = 'QuotaExceededError';
+    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw err; });
+    const r = store().importSaveFiles([frame('s1', 999)]);
+    spy.mockRestore();
+    expect(r).toEqual({ added: 0, renamed: 0 });
+    expect(store().validationError).toContain('本地存储');
+    expect(store().validationError).toContain('原有存档未改动');
+    expect(store().getSaveFiles()).toHaveLength(1);
+    expect(rawStored()).toBe(bytesBefore);
+  });
+
+  it('被追加改名的那一帧标得出「（导入N）」，不冲突的那一帧名字原样保留', () => {
+    // 控制表按 (年,季) 取最大 timestamp 选帧，两帧同名到秒时在列表里分不出哪份是被追加的（finding 3）
+    store().importSaveFiles([frame('s1', 100)]);
+    store().importSaveFiles([frame('s1', 999)]);
+    store().importSaveFiles([frame('s2', 7)]);
+    const files = store().getSaveFiles();
+    expect(files.find(f => f.id === 's1')!.name).toBe('帧s1');
+    expect(files.find(f => f.id === 's2')!.name).toBe('帧s2');
+    expect(files.find(f => f.id === 's1-imported-1')!.name).toBe('帧s1（导入1）');
+  });
+
+  it('「设为当前进度」把重置次数与预览对齐；不传或传非有限值就沿用本机计数（finding 4）', () => {
+    expect(store().resetCount).toBe(0);
+    store().applyImportedState(frame('s1', 77).state, 4, 3);
+    expect(store().resetCount).toBe(3);
+    expect(store().state.finance.cash).toBe(77);
+    store().applyImportedState(frame('s1', 88).state, 4);            // 包内没有历史帧 → 计数不动
+    expect(store().resetCount).toBe(3);
+    store().applyImportedState(frame('s1', 99).state, 4, NaN);       // 非有限值同样不采信
+    expect(store().resetCount).toBe(3);
+    expect(store().getSaveFiles()).toHaveLength(0);                   // 这一路始终不碰存档列表
+  });
+});
+
+describe('指纹声明的原型链读法（评审 Task 7 finding 1）', () => {
+  it('digests.frames 读出来的值不是字符串时按「包内无记录」说，绝不拿它去 .replace', () => {
+    // id 为 constructor/toString 这类原型链上的名字时，点号读出来是函数或 Object.prototype，
+    // 而契约要求这种情形印「哈希未计算（包内无记录）」——早先的实现会在下一行抛 TypeError，
+    // 预览于是变成「读取失败：TypeError…」
+    expect(digestSkipNote('帧x', undefined)).toBe('帧x：哈希未计算（包内无记录）');
+    expect(digestSkipNote('帧x', Object.prototype as unknown as string))
+      .toBe('帧x：哈希未计算（包内无记录）');
+    expect(digestSkipNote('帧x', (() => 1) as unknown as string))
+      .toBe('帧x：哈希未计算（包内无记录）');
+    expect(digestSkipNote('帧x', 'unavailable:bad-digest')).toBe('帧x：哈希未计算（bad-digest）');
+    expect(digestSkipNote('帧x', 'sha256:0123456789abcdef')).toBeNull();
   });
 });

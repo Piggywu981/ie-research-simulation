@@ -1046,7 +1046,7 @@ git commit -m "feat(save): 存档包解析与结构校验，畸形输入点名�
 
 **Interfaces:**
 - Consumes: Task 3 `auditFrames`/`auditSummary`（含 `legacyMismatch`）/`CAUSE_TEXT`/`CALIBER_TEXT`/`FrameAudit.restatementCaliber`、Task 4 `digestFrame`、Task 5 `SavePackage`、Task 6 `parseSavePackage`
-- Produces: store 上 `importSaveFiles(saves: SaveFile[]): { added: number; renamed: number }`、`applyImportedState(state: EnterpriseState, fromVersion: number): void`
+- Produces: store 上 `importSaveFiles(saves: SaveFile[]): { added: number; renamed: number }`、`applyImportedState(state: EnterpriseState, fromVersion: number, resetCount?: number): void`（落地实况：第三个参数是 S-T7 复审 finding 4 补的——预览印的"重置次数"取包内最近一帧，`loadGame` 也会恢复它，所以「设为当前进度」必须落同一个数，否则同一份进度两个说法；不传或传非有限值则本机计数不动）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1112,7 +1112,7 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
 
 ```ts
   importSaveFiles: (saves: SaveFile[]) => { added: number; renamed: number };
-  applyImportedState: (state: EnterpriseState, fromVersion: number) => void;
+  applyImportedState: (state: EnterpriseState, fromVersion: number, resetCount?: number) => void;
 ```
 
 实现（放在 `loadGame` 之后）：
@@ -1142,12 +1142,15 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
     return { added: toAdd.length, renamed };
   },
 
-  applyImportedState: (imported, fromVersion) => {
+  applyImportedState: (imported, fromVersion, resetCount) => {
     if (get().state.isPaused) {
       set({ validationError: '运营已暂停，请先继续运营再导入' });
       return;
     }
-    set({ state: migrateState(imported, fromVersion) });
+    set({
+      state: migrateState(imported, fromVersion),
+      ...(typeof resetCount === 'number' && Number.isFinite(resetCount) ? { resetCount } : {}),
+    });
     get().addOperationLog('导入存档', `设为当前进度：第${imported.operation.currentYear}年第${imported.operation.currentQuarter}季`);
   },
 ```
@@ -1270,7 +1273,14 @@ import type { FrameAudit } from '../utils/audit';
 > 只被校验为"是对象"，`principal` 的取值没人管，出现非有限值时整项印「—（数据异常）」而不是静默当 0 加进合计。
 
 - 「仅加入存档列表」（默认样式）→ `const r = importSaveFiles(pkg.saves)` → `setValidationError(null)` + 关闭面板；暂停时 `disabled` 并给可见说明。
-- 「设为当前进度」→ `applyImportedState(pkg.current, pkg.app.saveVersion)` → 关闭面板；同样受暂停门控。
+- 「设为当前进度」→ `applyImportedState(pkg.current, pkg.app.saveVersion, pending.resetCountValue ?? undefined)` → 关闭面板；同样受暂停门控。
+
+S-T7 复审后补的四处实况（`7153415` 之后，均在 `src/components/SaveLoadPanel.tsx` / `src/store/enterpriseStore.ts`）：
+
+1. **`digests.frames` 只能按自有键读**：包里的帧 id 若叫 `constructor`/`toString` 之类，点号读出来是原型链上的函数，`declared.replace(...)` 当场抛 TypeError，预览于是印成「读取失败」而不是契约要求的「哈希未计算（包内无记录）」。改为 `Object.prototype.hasOwnProperty.call(...)` 取 + `digestSkipNote` 内再加一道 `typeof === 'string'`（与 Task 6 在解析层用 Set 挡同一类危害同源）。
+2. **`localStorage.setItem` 必须接住**：解析层允许 8MB 而源配额约 5MB，一个**合法**的大包会在写入时抛 `QuotaExceededError`。抛点在写入之前所以原列表不残半截，但要 `set({validationError})` 说出原因、返回 `{added:0,renamed:0}`，且**不能**先 `set({saveFiles})`（否则刷新前后两套真相）。
+3. **被改名追加的那帧显示名加「（导入N）」**：`name` 不在逐帧指纹的五个输入里，改名不影响任何指纹；而控制表按 `(年,季)` 取最大 `timestamp` 选帧，一份 wall-clock 更晚的外来帧会静默接管同 (年,季) 的格子——"非覆盖"只保住了存档列表的字节，保不住派生表。预览里同时加一行灰字把这件事说在前面。
+4. **`spanText`/重置次数的同毫秒兜底改用 `localeCompare`**：`a.id < b.id` 与 `audit.ts` 的 `localeCompare` 对大小写与 `_` 排序不同（实测 56 对 id 里 20 对不一致），只在两帧同毫秒时可观察，但决定印面取哪一帧。
 - 「取消」→ `setPending(null)`，不产生任何写操作。
 
 文件入口用 `<input type="file" accept="application/json" className="hidden" onChange={e => handleFilePicked(e.target.files?.[0])} />` + 一个「导入存档包」按钮触发 `click()`；该入口只读，暂停时可用。
