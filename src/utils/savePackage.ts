@@ -187,6 +187,13 @@ const factoryProblem = (row: Record<string, unknown>, path: string): string | nu
   return tableProblem(lines, `${path}.productionLines`);
 };
 
+// 库存行的判据：数量必须真是有限数字——控制表逐行拼 `${quantity}${type}`（controlTable.ts:105-106）、
+// 物流中心用 reduce 累加（LogisticsCenter.tsx:59/65），非数字不会抛但会印出 NaN 金额。
+const quantityRowProblem = (row: Record<string, unknown>, path: string): string | null =>
+  isFiniteNumber(row.quantity)
+    ? null
+    : `${path}.quantity 必须是有限数字（控制表与库存合计逐行读它），实际为 ${briefly(row.quantity)}`;
+
 // current 与**每一帧**共用的字段判据（评审 round-3 new finding #2：只查 current 会让
 // `saves[i].finance.cash = 1e999` 绕过校验，而审计对 Infinity 现金会平法判 ok，是假阴性）。
 // 前缀用传入的 label，于是同一条规则在两处给得出各自的路径名，不复制第二份判据。
@@ -231,7 +238,32 @@ const stateShapeProblem = (label: string, state: Record<string, unknown>): strin
   const mkt = isRecord(state.marketing) ? state.marketing : {};
   const marketsProblem = tableProblem(mkt.markets, `${label}.marketing.markets`);
   if (marketsProblem) return marketsProblem;
-  return tableProblem(mkt.isoCertifications, `${label}.marketing.isoCertifications`);
+  const isoProblem = tableProblem(mkt.isoCertifications, `${label}.marketing.isoCertifications`);
+  if (isoProblem) return isoProblem;
+
+  // 库存/订单/日志这几张表此前**不在口径内**（"下游不抛"当时只算了审计、指纹、迁移三条链）。
+  // 控制者的对抗探针实测：`logistics.rawMaterials = [null]` 一类畸形被放行后，导入的第一屏就抛——
+  //   controlTable.ts:105-106 逐行读 `${m.quantity}${m.type}`；LogisticsCenter.tsx:59/65 用 reduce 累加 quantity；
+  //   OperationCenter.tsx:370 在**推进季度**时 filter 订单字段（不只是展示）；MarketingCenter.tsx:338/457/511 逐行渲染。
+  // 于是把口径补成"导入后要落到的每条链都不抛"，而不只是"算得出的那几条"。
+  const logistics = isRecord(state.logistics) ? state.logistics : {};
+  const matProblem = tableProblem(logistics.rawMaterials, `${label}.logistics.rawMaterials`, quantityRowProblem);
+  if (matProblem) return matProblem;
+  const finProblem = tableProblem(logistics.finishedProducts, `${label}.logistics.finishedProducts`, quantityRowProblem);
+  if (finProblem) return finProblem;
+  const matOrdersProblem = tableProblem(logistics.rawMaterialOrders, `${label}.logistics.rawMaterialOrders`);
+  if (matOrdersProblem) return matOrdersProblem;
+
+  const adsProblem = tableProblem(mkt.advertisements, `${label}.marketing.advertisements`);
+  if (adsProblem) return adsProblem;
+  const availProblem = tableProblem(mkt.availableOrders, `${label}.marketing.availableOrders`);
+  if (availProblem) return availProblem;
+  const selProblem = tableProblem(mkt.selectedOrders, `${label}.marketing.selectedOrders`);
+  if (selProblem) return selProblem;
+
+  const opLogsProblem = tableProblem(op.operationLogs, `${label}.operation.operationLogs`);
+  if (opLogsProblem) return opLogsProblem;
+  return tableProblem(op.cashFlowHistory, `${label}.operation.cashFlowHistory`);
 };
 
 // 整包/逐帧指纹的形状闸（规格 §4.2）。简报没列这一条，但它是真缺口：Task 7 直接

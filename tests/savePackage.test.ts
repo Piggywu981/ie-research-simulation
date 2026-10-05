@@ -965,3 +965,61 @@ describe('存档包解析：游戏真产得出的包一律放行', () => {
     }
   });
 });
+
+describe('存档包解析：导入后要落到的展示链', () => {
+  // 这批判据补的是控制者探针查出的口径缺口：此前"下游不抛"只算了审计/指纹/迁移三条链，
+  // 而 `logistics.rawMaterials = [null]` 被放行后，导入的第一屏就抛——
+  // controlTable.ts:105-106 逐行拼 `${quantity}${type}`、LogisticsCenter.tsx:59/65 reduce 累加、
+  // OperationCenter.tsx:370 在推进季度时 filter 订单、MarketingCenter.tsx:338/457/511 逐行渲染。
+  const displayCases: Array<[(pkg: Record<string, any>) => void, string]> = [
+    [(p) => { p.current.logistics.rawMaterials = [null]; }, 'current.logistics.rawMaterials[0] 必须是对象'],
+    [(p) => { p.current.logistics.finishedProducts[0].quantity = '3'; }, 'finishedProducts[0].quantity 必须是有限数字'],
+    [(p) => { p.current.logistics.rawMaterialOrders = ['x']; }, 'current.logistics.rawMaterialOrders[0] 必须是对象'],
+    [(p) => { p.current.marketing.advertisements = [null]; }, 'current.marketing.advertisements[0] 必须是对象'],
+    [(p) => { p.current.marketing.availableOrders = [null]; }, 'current.marketing.availableOrders[0] 必须是对象'],
+    [(p) => { p.current.marketing.selectedOrders = [42]; }, 'current.marketing.selectedOrders[0] 必须是对象'],
+    [(p) => { p.current.operation.operationLogs = [null]; }, 'current.operation.operationLogs[0] 必须是对象'],
+  ];
+
+  it('展示表的非对象条目与库存的非法数量都点名拒绝', async () => {
+    const text = await validBytes();
+    for (const [mut, path] of displayCases) {
+      const pkg = bag(text);
+      mut(pkg);
+      const reason = await reasonOf(JSON.stringify(pkg));
+      expect(reason).not.toBeNull();
+      expect(reason).toContain(path);
+    }
+  });
+
+  it('现金历史里的非法数字不拒（只读展示，缺字段与旧档同形），但库存数量必须真是数字', async () => {
+    const text = await validBytes();
+    const pkg = bag(text);
+    pkg.current.operation.cashFlowHistory = [{ ...pkg.current.operation.cashFlowHistory[0], cash: '20' }];
+    expect(await reasonOf(JSON.stringify(pkg))).toBeNull();   // 面板读 cashFlowHistory 只取 year/quarter/cash 印数，不抛
+    const withBadQty = bag(text);
+    withBadQty.current.logistics.rawMaterials[0].quantity = '3';
+    expect(await reasonOf(JSON.stringify(withBadQty))).toContain('rawMaterials[0].quantity 必须是有限数字');
+  });
+
+  it('同一套判据也跑在每一帧上：帧里的库存 null 点名到 saves[0]', async () => {
+    const text = await validBytes();
+    const pkg = bag(text);
+    pkg.saves = [frameOf()];
+    pkg.saves[0].state.logistics.rawMaterials = [null];
+    expect(await reasonOf(JSON.stringify(pkg))).toContain('saves[0].logistics.rawMaterials[0] 必须是对象');
+  });
+
+  it('健康列表与缺失的可选表不误伤：annualLedger 交给 migrateState 补，放行', async () => {
+    const text = await validBytes();
+    const pkg = bag(text);
+    expect(await reasonOf(JSON.stringify(pkg))).toBeNull();
+    const noLedger = bag(text);
+    delete noLedger.current.operation.annualLedger;
+    // enterpriseStore.ts:298 无条件补 emptyLedger()，所以"缺失"是迁移的活，不是拒绝的理由
+    expect(await reasonOf(JSON.stringify(noLedger))).toBeNull();
+    const badLedger = bag(text);
+    badLedger.current.operation.annualLedger = 5;
+    expect(await reasonOf(JSON.stringify(badLedger))).toBeNull();  // 数字上读属性得 undefined，不抛、也不算金额结论
+  });
+});
