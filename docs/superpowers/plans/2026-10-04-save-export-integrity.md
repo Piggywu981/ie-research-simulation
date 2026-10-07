@@ -1282,6 +1282,10 @@ S-T7 复审后补的四处实况（`7153415` 之后，均在 `src/components/Sav
 2. **`localStorage.setItem` 必须接住**：解析层允许 8MB 而源配额约 5MB，一个**合法**的大包会在写入时抛 `QuotaExceededError`。抛点在写入之前所以原列表不残半截，但要 `set({validationError})` 说出原因、返回 `{added:0,renamed:0}`，且**不能**先 `set({saveFiles})`（否则刷新前后两套真相）。
 3. **被改名追加的那帧显示名加「（导入N）」**：`name` 不在逐帧指纹的五个输入里，改名不影响任何指纹；而控制表按 `(年,季)` 取最大 `timestamp` 选帧，一份 wall-clock 更晚的外来帧会静默接管同 (年,季) 的格子——"非覆盖"只保住了存档列表的字节，保不住派生表。预览里同时加一行灰字把这件事说在前面。
 4. **`spanText`/重置次数的同毫秒兜底改用 `localeCompare`**：`a.id < b.id` 与 `audit.ts` 的 `localeCompare` 对大小写与 `_` 排序不同（实测 56 对 id 里 20 对不一致），只在两帧同毫秒时可观察，但决定印面取哪一帧。
+
+> **2026-10-05 复审追记（Task 8 复审 items 2/6c）**：上面第 1、4 条的住处有变，判据本身不变。
+> - 第 1 条的 `digestSkipNote` / `isComparableDigest` 搬进 `src/utils/audit.ts`（核对报告要印同一句「哈希未计算（…）」，而 util 不能 import `.tsx`），组件里 `export { digestSkipNote, isComparableDigest }` 原名转出，`tests/saveImport.test.ts` 一行没改；新增不带帧名的裸句 `digestUnavailableNote`，面板拼 `${saveName}：`、报告的包指纹行直接用它。
+> - 第 4 条那段 earliest/latest 循环从组件搬进 `audit.ts` 的 `packageSpan(pkg)`（返回 `{earliest, latest, text}`；`latestPackageFrame` 就是它的 `latest`）。同一条全序在组件里留第二份实现，就还是"两个地方决定取哪一帧"那个缺陷；`tests/integrityCopy.test.ts` 现在钉住组件源码里不再出现 `byTimeThenId(`。
 - 「取消」→ `setPending(null)`，不产生任何写操作。
 
 文件入口用 `<input type="file" accept="application/json" className="hidden" onChange={e => handleFilePicked(e.target.files?.[0])} />` + 一个「导入存档包」按钮触发 `click()`；该入口只读，暂停时可用。
@@ -1355,8 +1359,17 @@ Expected: FAIL —— `buildAuditReport` 未导出。
 >    `buildAuditReport(pkg, results, boundaryLine, digestNotes: { mismatch: string[]; skipped: string[] })`，
 >    文本与 JSON（`digestMismatch` / `digestSkipped`）都带上，并印一行「判定出自生成这份报告的本机」。
 > 2. **`${r.actualCash}M` 这类裸插值必须换成 `money(r.actualCash)`**：审计**刻意**给 `null`（§4.4「null 而非 NaN」），裸插值会给 no-anchor 帧印出 `nullM`。同理 `resetCount` 走 `readNumber`。
-> 3. **`money` / `moneySum` / `readNumber` 搬到新建的 `src/utils/format.ts`，`formatFrameAudit` 搬到 `audit.ts`**（不是 `format.ts`：它逐字组装 `CAUSE_TEXT`/`CALIBER_TEXT`，是审计词汇表的消费者）。理由：报告住在 util `audit.ts`，而 util 不能反向 import `.tsx`；面板与报告必须印得一样。`digestSkipNote`/`isComparableDigest` 留在组件——只有指纹读法用得上，报告不需要。`tests/saveImport.test.ts` 的 import 来源随之改写（断言一字未改）。
+> 3. **`money` / `moneySum` / `readNumber` 搬到新建的 `src/utils/format.ts`，`formatFrameAudit` 搬到 `audit.ts`**（不是 `format.ts`：它逐字组装 `CAUSE_TEXT`/`CALIBER_TEXT`，是审计词汇表的消费者）。理由：报告住在 util `audit.ts`，而 util 不能反向 import `.tsx`；面板与报告必须印得一样。~~`digestSkipNote`/`isComparableDigest` 留在组件——只有指纹读法用得上，报告不需要。~~ **（2026-10-05 复审 item 2 推翻这半句：报告要印同一句「哈希未计算（…）」，所以这两条也搬进 `audit.ts`，另加裸句 `digestUnavailableNote`；组件按原名 `export { digestSkipNote, isComparableDigest }` 转出，`tests/saveImport.test.ts` 的 import 路径与断言一字未动。）**
 > 4. **能力边界句与两条余地导出成常量** `INTEGRITY_BOUNDARY` / `INTEGRITY_CAVEATS`（住在 `audit.ts`），Task 9 的规则弹窗与 README 直接 import 同一份，不许各写一遍。报告首行仍是边界句本身，两条余地紧随其后。
+>
+> **2026-10-05 复审修正（Task 8 评审 5 条 Minor + Task 9 报的两处补丁句，共 7 项）**
+> 5. **包指纹那一行必须说是「声明值」**（评审 item 1）：原片段 `包指纹：${pkg.digests.package}` 什么都不标，而导入侧**从没**重算过整包摘要——`handleFilePicked` 那条异步循环只跑 `digestFrame`（逐帧），`digestPackage` 只在导出时算过一次。于是一个逐帧指纹被整批重算过的包会印成「指纹不符：无」+ 一行看着已核实的 `sha256:`，正是本 Task 设计问题 1 禁止的假保证。落地印面：
+>    `包指纹：…（包内声明值；导入侧只重算逐帧指纹，整包指纹未重算）`，JSON 除 `packageDigest`（原键保留，脚本在读）外**另加** `packageDigestScope: 'declared-not-reverified'`；`tests/audit.test.ts` 那份键集合断言随之从 12 键变 14 键（再加 `reportFileName`）。
+> 6. **`unavailable:*` 不许原样印进报告**（item 2，规格 §4.4）：声明值是非 HTTPS 之类时，那一行改印「哈希未计算（非 HTTPS 环境）」/「哈希未计算（<原因>）」，与面板同一句——措辞搬进 `audit.ts`（见上面第 3 条被推翻的后半句），`digestUnavailableNote` 是不带帧名的裸句，`digestSkipNote` 只负责拼 `${saveName}：`。文本报告通篇不出现 `unavailable:`（JSON 里的 `frameDigests` 是给脚本的声明原文，不在此列）。
+> 7. **报告导出与存档包导出同级**（item 3，规格 §6）：`handleExportReport` 原写法没有 try/catch，`buildAuditReport` 或 Blob 一抛就只剩控制台一行红字、面板"点了没反应"。现在 build 与 download 都在 try 里，失败写 `validationError` 且原因取 `error.message`（Task 5 的规矩：`error.name` 是英文类名，会把中文说明吞掉）。
+> 8. **`INTEGRITY_CAVEATS[0]` 的版面指代去掉**（item 4）：旧句尾「条数见下方帧统计里的…」里的「下方」是**报告版面**相对的方向词，而这句话被三处逐字印（报告 / 规则弹窗 / README），印在弹窗与 README 就指向 nothing——Task 9 因此在 `RulesModal.tsx` 与 README 各垫了一句自造说明去解释它，句子就此有了三四个版本。修法是句子本身改成上下文无关（「这类判定的条数由帧统计单列（「其中旧档 version<4 的判定 N 条」）」，说的是那一行的**名字**不是位置），两句补丁随之删掉；`INTEGRITY_BOUNDARY` 一字未动（报告首行与 README 都逐字断言它）。
+> 9. **测试强度补三条**（评审 findings 4/5，item 6）：(a) 最近一帧 `resetCount` 合法为 `0` 时印 `0` 而不是「—」（判据是 `Number.isFinite`，不是真值性；`latest.resetCount ? … : null` 那种写法会死）；(b) 钉住 `指纹口径…` 与 `逐帧指纹：包内声明 K 条` 两行散文（此前删掉任一行都无人报警）；(c) 面板那段 earliest/latest 循环搬成 `audit.ts` 的 `packageSpan`（与 `latestPackageFrame` 同一次扫描、同一条 `byTimeThenId`），并用同毫秒的 id `'a'` / `'B'` 钉住兜底必须是 `localeCompare`（`'a' < 'B'` 为 false，退回码元序会取到相反的两端）。
+> 10. **规格 §4.5 的「文件名」字段落到正文**（item 7）：取舍是**加一行** `文件名：<报告产物名>`（面板把已经算好的 `auditReportFileName(...)` 通过新增的第五个参数 `meta: { reportFileName?: string }` 传进来），不改用户已批准的规格；未传时文本不印这一行、JSON 给 `reportFileName: null`，绝不印一个空名字。
 
 ```ts
 export function buildAuditReport(
@@ -1364,6 +1377,7 @@ export function buildAuditReport(
   results: FrameAudit[],
   boundaryLine: string,
   digestNotes: { mismatch: string[]; skipped: string[] },
+  meta?: { reportFileName?: string },   // 复审 item 7 新增的第五个参数（可选，旧四参调用照常成立）
 ): { json: string; text: string } {
   const summary = auditSummary(results);
   const diverging = firstDivergingFrame(results);
@@ -1376,9 +1390,13 @@ export function buildAuditReport(
     ...INTEGRITY_CAVEATS.map((c) => `· ${c}`),
     '',
     `报告生成时间：${generatedAt}`,
+    ...(meta && meta.reportFileName ? [`文件名：${meta.reportFileName}`] : []),   // 复审 item 7：规格 §4.5 的「文件名」落到正文
     `导出时间：${pkg.exportedAt}`,
     `重置次数：${packageResetCountText(pkg)}（取包内最近一帧；无历史帧时给「—」而不是 0）`,
-    `包指纹：${pkg.digests.package}`,
+    // 复审 item 1/2 后这一行不再是裸的 `${pkg.digests.package}`：它是**声明值**（整包指纹从未重算），
+    // 且声明本身是 `unavailable:*` 时要翻成「哈希未计算（…）」，内部 token 不许印给老师（规格 §4.4）
+    packageDigestLine,   // 可比对：`包指纹：${声明}（包内声明值；导入侧只重算逐帧指纹，整包指纹未重算）`
+                          // 算不出：`包指纹：哈希未计算（非 HTTPS 环境）——包内声明值；导入侧只重算逐帧指纹，整包指纹未重算`
     // 两个指纹覆盖的字段不同，报告里必须说清（评审 Task 4 item 4）：逐帧指纹按规格只包
     // {id,timestamp,version,resetCount,state}，而包壳含整份 SaveFile（name/enterpriseName/createdAt 都在内）——
     // 只改存档名就会呈现"包指纹不符 + 逐帧全通过"，不写这行它读起来像篡改。
@@ -1398,8 +1416,11 @@ export function buildAuditReport(
   ];
   return {
     text: lines.join('\n'),
-    json: JSON.stringify({ boundary: boundaryLine, caveats: INTEGRITY_CAVEATS, generatedAt, exportedAt: pkg.exportedAt,
-      resetCount: packageResetCount(pkg), packageDigest: pkg.digests.package, frameDigests: pkg.digests.frames,
+    json: JSON.stringify({ boundary: boundaryLine, caveats: INTEGRITY_CAVEATS, generatedAt,
+      reportFileName: meta?.reportFileName ?? null, exportedAt: pkg.exportedAt,
+      resetCount: packageResetCount(pkg), packageDigest: pkg.digests.package,
+      packageDigestScope: 'declared-not-reverified',   // 复审 item 1：机读侧同样不许把它当"本机已核实"
+      frameDigests: pkg.digests.frames,
       digestMismatch: digestNotes.mismatch, digestSkipped: digestNotes.skipped, summary, diverging, frames: results }, null, 2),
   };
 }
@@ -1457,13 +1478,14 @@ git commit -m "feat(save): 核对报告导出（txt/json），与面板共用同
       '核对报告：预览当场算出的逐帧结论与指纹判定可导出为 txt / json 两种，首行就是下面这句能力边界声明；报告只转录本机算过的结果，不再重算一遍。',
       '导出与核对（读文件、算预览）在运营暂停时仍可用；只有会改动本机存档的两个落库动作要先继续运营。',
       INTEGRITY_BOUNDARY,
-      '以下两条余地是实测得出的，与核对报告首行之后那两条逐字相同（同一份常量，不重写）；其中提到的「帧统计」见核对报告的帧统计行。',
       ...INTEGRITY_CAVEATS,
     ],
   },
 ```
 
 顶部随之 `import { CAUSE_TEXT, INTEGRITY_BOUNDARY, INTEGRITY_CAVEATS } from '../utils/audit';`，并把 `RULE_SECTIONS` 导出给测试（本仓库无 jsdom，测不了渲染就测**渲染要用的数据**）。原第 5 条与第 6 条分别由 `INTEGRITY_BOUNDARY` 与 `INTEGRITY_CAVEATS[1]` 承担；`INTEGRITY_CAVEATS[0]`（旧档"不符"≠篡改）是原计划漏的那一条，补上。
+
+> **2026-10-05 复审修正（item 4）**：这块落地时曾在 `INTEGRITY_BOUNDARY` 与 `...INTEGRITY_CAVEATS` 之间垫一句「以下两条余地是实测得出的……其中提到的「帧统计」见核对报告的帧统计行。」——那是为解释 `INTEGRITY_CAVEATS[0]` 句尾「条数见下方帧统计里的…」这个**报告版面**相对的方向词而写的补丁，README 里也有一条同族补丁。两句都已删除：常量本身改成上下文无关的说法（见 Task 8 修正第 8 条），"这句话只有一份"才真的成立。`tests/integrityCopy.test.ts` 随之钉住「余地里不许出现 下方/如上 之类的方向词」「弹窗与 README 不得再出现解释性补丁句」。
 
 - [ ] **Step 2: README**
 
