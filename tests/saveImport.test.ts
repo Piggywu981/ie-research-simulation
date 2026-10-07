@@ -10,8 +10,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshState, migrateState, useEnterpriseStore } from '../src/store/enterpriseStore';
 import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile } from '../src/types/enterprise';
-import { auditFrame, CAUSE_TEXT, CALIBER_TEXT, type FrameAudit } from '../src/utils/audit';
-import { digestSkipNote, formatFrameAudit, isComparableDigest, money, moneySum, readNumber } from '../src/components/SaveLoadPanel';
+import { auditFrame, CAUSE_TEXT, CALIBER_TEXT, formatFrameAudit, type FrameAudit } from '../src/utils/audit';
+// Task 8：读数→印面搬到 utils/format.ts、一帧结论的一行搬到 utils/audit.ts（核对报告要用同一份措辞，
+// 而 util 不能反向 import 组件）。以下**断言一字未改**，只是换了 import 来源；指纹那两条仍在组件里。
+import { money, moneySum, readNumber } from '../src/utils/format';
+import { digestSkipNote, isComparableDigest } from '../src/components/SaveLoadPanel';
 
 const store = () => useEnterpriseStore.getState();
 

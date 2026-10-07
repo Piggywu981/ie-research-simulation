@@ -2,7 +2,8 @@
 // 帧内不做季度级猜测定位——按 (year,quarter) 分桶会因年末日志被 remap 到 (收尾年,4)、
 // 重述串落在 (新年,新季) 而错位；按数组顺序累计也不行，因为 quarterEndLog 在 allLogs 里排在
 // 年末结算日志之前。季度坐标改由整包给出（见 auditFrames / firstDivergingFrame）。
-import type { FinancialLogRecord, SaveFile } from '../types/enterprise';
+import type { FinancialLogRecord, SaveFile, SavePackage } from '../types/enterprise';
+import { money, readNumber } from './format';
 import { RESTATED_FULL_NET_FROM_VERSION, isSeedLog, kindOfLog, restatedChainIsNewCaliber } from './restatement';
 
 export type AuditStatus = 'ok' | 'mismatch' | 'no-anchor';
@@ -119,10 +120,14 @@ export function auditFrame(save: SaveFile): FrameAudit {
 // 先浅拷贝再排序：调用方传入的可能是 store 里的存档列表，不允许被就地改序。
 // timestamp 相同（同一毫秒里的手动存档与 nextQuarter 触发的自动存档很常见）时用 id 兜底：
 // 比较器必须全序，否则 sort 的稳定性把输入数组的顺序当成结果顺序，firstDivergingFrame 会报错季。
+// 这条「时间优先、同毫秒按 id」的定序**只有一份**（本函数、面板的时间跨度、报告的重置次数都调它）：
+// 兜底写法若两处不一致（`a.id < b.id` 与 localeCompare 对大小写与 `_` 的排序就不同，实测 56 对 id 里
+// 20 对不一致），同毫秒时报告与预览会各自取到不同的一帧（评审 Task 7 finding 5）。
+export const byTimeThenId = (a: SaveFile, b: SaveFile): number =>
+  (a.timestamp - b.timestamp) || a.id.localeCompare(b.id);
+
 export const auditFrames = (frames: SaveFile[]): FrameAudit[] =>
-  [...frames]
-    .sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id))
-    .map(auditFrame);
+  [...frames].sort(byTimeThenId).map(auditFrame);
 
 export const firstDivergingFrame = (results: FrameAudit[]): FrameAudit | null =>
   results.find((r) => r.status !== 'ok') ?? null;
@@ -155,3 +160,146 @@ export const CALIBER_TEXT: Record<RestatementCaliber, string> = {
   'legacy-converted': '旧档（version<4）：重述串已换算，判定只依据流水',
   'legacy-unconverted': '旧档（version<4）：判定只依据流水；该版本可能存在未记账的现金变动，"不符"不等于篡改',
 };
+
+// no-anchor 帧不附口径文案（规格 §4.4：那一档说的是「B 侧读数的身份」，而这一帧两侧都没算成，
+// 附上「本帧按 v4 口径判定…」会变成自相矛盾的印面）。抑制规则只写这一次，S-T7 预览与 S-T8 报告共用；
+// 返回值自带前导分号，调用方只管拼在括号内的最后一个读数之后。
+export const frameCaliberNote = (result: FrameAudit): string =>
+  result.status === 'no-anchor' ? '' : `；${CALIBER_TEXT[result.restatementCaliber]}`;
+
+/** 一组帧里出现过的口径说明（去重、按首次出现顺序，S-T7 预览的口径清单用）。
+ *  no-anchor 帧同样不计入——与 frameCaliberNote 是同一条抑制规则，两处不能一个说、一个不说。 */
+export const caliberNotesOf = (results: FrameAudit[]): string[] =>
+  Array.from(new Set(
+    results.filter((r) => r.status !== 'no-anchor').map((r) => CALIBER_TEXT[r.restatementCaliber]),
+  ));
+
+/** 一帧核对结论的一行措辞（S-T7 预览用）。住在 audit.ts 而不是组件里（Task 8 设计问题 2）：
+ *  它逐字组装 CAUSE_TEXT / CALIBER_TEXT / frameCaliberNote / money，全是审计侧的词汇表，
+ *  而 util（本模块的报告）不能反向 import .tsx；词汇表与判据同源才不会再漂移。
+ *  mismatch 必附 CALIBER_TEXT：旧档（version<4）天然不平印出来的那句「流水条目与现金不符」
+ *  与 v4 帧上的篡改判定**逐字相同**，只有这条文案能把「不符 ≠ 篡改」说出来（规格 §4.4、评审 round-3）。 */
+export const formatFrameAudit = (result: FrameAudit): string =>
+  result.status === 'no-anchor'
+    ? `${result.saveName}：起算链不完整（缺期初现金种子），本帧现金 ${money(result.actualCash)}`
+    : `${result.saveName}（第${result.year}年第${result.quarter}季）：账实不符（${CAUSE_TEXT[result.cause ?? 'both']}），`
+      + `流水重演算 ${money(result.flowRebuilt)} / 帧末现金 ${money(result.actualCash)}${frameCaliberNote(result)}`;
+
+// ══ 对外文案：能力边界（规格 §4.6，报告首行 / 规则弹窗 / README 三处同一句）═══════════
+// 定在 Task 9 之前是有原因的：那句话要在三个地方出现，任何一处自己写一遍，三处就会各自漂走。
+// 报告的**首行**必须是这句（规格 §4.5），面板把它作为 boundaryLine 传进来，不另写一份。
+export const INTEGRITY_BOUNDARY = '完整性校验用于发现误操作与随手改数，不构成防作弊保证；成绩判定以运行控制表与实践报告为准。';
+
+// §4.6 追加的两条余地：都是实测得出、不是假想。少了它们，报告的「不符」二字会被读成一条铁证。
+export const INTEGRITY_CAVEATS: string[] = [
+  '旧档（version<4）的"不符"不等于篡改：那一版可能存在没写进流水的现金变动，天然就可能对不平；'
+    + '判据只看流水，条数见下方帧统计里的「其中旧档 version<4 的判定 N 条」。',
+  '同一毫秒内的手操是精度盲区：季度推进与主动交易若落在 Date.now() 的同一毫秒，那笔交易既不进重述串、'
+    + '也不进尾随流水，会报出一条并不存在的"账实不符"；人工点按隔着秒不会触发，脚本式连点或自动化才可能。',
+];
+
+// 包内最近的一帧（报告与预览的「重置次数」都取它）。空包给 null——调用方因此**不可能**凭空印出 0。
+export const latestPackageFrame = (pkg: SavePackage): SaveFile | null => {
+  let latest: SaveFile | null = null;
+  for (const save of pkg.saves) {
+    if (latest === null || byTimeThenId(save, latest) > 0) latest = save;
+  }
+  return latest;
+};
+
+// 重置次数是 **SaveFile** 的字段、不在 current 里，只能取最近那一帧的；
+// 与 S-T7 预览同一条规则（同一个 latest、同一道 Number.isFinite 判据），所以住在审计里而不是面板里。
+export const packageResetCount = (pkg: SavePackage): number | null => {
+  const latest = latestPackageFrame(pkg);
+  return latest !== null && typeof latest.resetCount === 'number' && Number.isFinite(latest.resetCount)
+    ? latest.resetCount : null;
+};
+export const packageResetCountText = (pkg: SavePackage): string => {
+  const latest = latestPackageFrame(pkg);
+  return readNumber(latest ? latest.resetCount : undefined);
+};
+
+/** 核对报告的两个产物（规格 §4.5）。
+ *  **同步**且**不碰 crypto**：逐帧指纹是 WebCrypto 的异步产物，已经在 S-T7 的导入预览里算完并分成
+ *  「不符 / 未计算」两张表（设计问题 1）。报告只转录这两张表，绝不重算——报告若自己算一遍，
+ *  就是同一件事的第二套实现（换设备/非 HTTPS 时机根本算不出，两套会给出不同印面），
+ *  而只印「包指纹 sha256:…」不说明是谁算的，老师读到的将是这台机器没有核实过的保证。
+ *  所以第四个参数 digestNotes 是必须的：它让"判定出自本机、且与面板当场看到的一模一样"这件事可证。 */
+export interface AuditDigestNotes {
+  mismatch: string[];
+  skipped: string[];
+}
+
+export function buildAuditReport(
+  pkg: SavePackage,
+  results: FrameAudit[],
+  boundaryLine: string,
+  digestNotes: AuditDigestNotes,
+): { json: string; text: string } {
+  const summary = auditSummary(results);
+  const diverging = firstDivergingFrame(results);
+  const generatedAt = new Date().toISOString();
+  // 每个读数都过一次 money()：审计**刻意**给 null（§4.4「null 而非 NaN」），裸插值会印成 "nullM"/"NaNM"
+  const frameLines = results.map((r) => r.status === 'ok'
+    ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${money(r.actualCash)}${frameCaliberNote(r)}）`
+    : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] `
+      + `${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${money(r.flowRebuilt)}，按重述串重建 `
+      + `${money(r.restatedRebuilt)}，帧内现金 ${money(r.actualCash)}${frameCaliberNote(r)}）`);
+  const digestLines = [
+    `指纹判定（由生成这份报告的本机在导入预览那一刻算出：换设备或换浏览器再算一次可能给出不同结果，`
+      + `指纹只作线索、不作结论）：不符 ${digestNotes.mismatch.length} 条，未计算或无法比对 ${digestNotes.skipped.length} 条`,
+    ...(digestNotes.mismatch.length
+      ? digestNotes.mismatch.map((line) => `  指纹不符 · ${line}`)
+      : ['  指纹不符：无']),
+    ...(digestNotes.skipped.length
+      ? digestNotes.skipped.map((line) => `  指纹未计算 · ${line}`)
+      : ['  指纹未计算：无']),
+  ];
+  const lines = [
+    boundaryLine,
+    '',
+    '能力边界的两条余地（实测得出，不是假想）：',
+    ...INTEGRITY_CAVEATS.map((c) => `· ${c}`),
+    '',
+    `报告生成时间：${generatedAt}`,
+    `导出时间：${pkg.exportedAt}`,
+    `包内进度：第${pkg.app.year}年第${pkg.app.quarter}季（存档格式 v${pkg.app.saveVersion}，历史帧 ${pkg.saves.length} 个）`,
+    `重置次数：${packageResetCountText(pkg)}（取包内最近一帧；包内无历史帧时给「—」而不是 0）`,
+    `包指纹：${pkg.digests.package}`,
+    `逐帧指纹：包内声明 ${Object.keys(pkg.digests.frames).length} 条`,
+    // 两个指纹覆盖的字段不同，报告里必须说清（评审 Task 4 item 4）：逐帧指纹按规格只包
+    // {id,timestamp,version,resetCount,state}，而包壳含整份 SaveFile（name/enterpriseName/createdAt 都在内）——
+    // 只改存档名就会呈现"包指纹不符 + 逐帧全通过"，不写这行它读起来像篡改。
+    '指纹口径：包指纹覆盖整包字节（digests 自身除外；含存档名/企业名/createdAt）；'
+      + '逐帧指纹只覆盖 {id,timestamp,version,resetCount,state}，仅改名会动包指纹而不动逐帧指纹。',
+    ...digestLines,
+    '',
+    `帧统计：共 ${summary.total}，通过 ${summary.ok}，不符 ${summary.mismatch}`
+      + `（其中旧档 version<4 的判定 ${summary.legacyMismatch} 条，其"不符"不等于篡改），起算链不完整 ${summary.noAnchor}`,
+    `分歧起点：${diverging
+      ? `${diverging.restatementCaliber !== 'v4' ? '（该帧 version<4，先排除历史版本缺日志再谈篡改）' : ''}`
+        + `${diverging.saveName}（第${diverging.year}年第${diverging.quarter}季）`
+      : '未发现账实分歧'}`,
+    '',
+    ...frameLines,
+  ];
+  return {
+    text: lines.join('\n'),
+    // JSON 是**给脚本**的那一份（规格 §4.5：教师侧要能批注、可比对）：分歧起点给的是帧对象本身而不是散文，
+    // 免得脚本用正则去啃中文行。指纹两张表也在这里，与 text 同源。
+    json: JSON.stringify({
+      boundary: boundaryLine,
+      caveats: INTEGRITY_CAVEATS,
+      generatedAt,
+      exportedAt: pkg.exportedAt,
+      resetCount: packageResetCount(pkg),
+      packageDigest: pkg.digests.package,
+      frameDigests: pkg.digests.frames,
+      digestMismatch: digestNotes.mismatch,
+      digestSkipped: digestNotes.skipped,
+      summary,
+      diverging,
+      frames: results,
+    }, null, 2),
+  };
+}

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
-import { auditFrame, auditFrames, auditSummary, CALIBER_TEXT, CAUSE_TEXT, firstDivergingFrame, type FrameAudit } from '../src/utils/audit';
+import { auditFrame, auditFrames, auditSummary, buildAuditReport, CALIBER_TEXT, CAUSE_TEXT, firstDivergingFrame, INTEGRITY_BOUNDARY, INTEGRITY_CAVEATS, type FrameAudit } from '../src/utils/audit';
 import { rebuildRestatedChain } from '../src/utils/restatement';
-import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile } from '../src/types/enterprise';
+import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile, type SavePackage } from '../src/types/enterprise';
 
 const store = () => useEnterpriseStore.getState();
 
@@ -614,5 +614,155 @@ describe('cause 文案', () => {
   it('CAUSE_TEXT 覆盖三种 cause', () => {
     expect(Object.keys(CAUSE_TEXT).sort()).toEqual(['both', 'flow-log', 'restated-log']);
     expect(Object.values(CAUSE_TEXT).every(t => typeof t === 'string' && t.length > 0)).toBe(true);
+  });
+});
+
+// ══ S-T8 核对报告导出（规格 §4.5 报告内容、§4.6 对外文案）═══════════════════════
+// 报告**只转录**已经算好的东西：逐帧结论来自 auditFrames，指纹判定来自 S-T7 那条异步哈希循环。
+// 报告自己绝不再算一次指纹——它是同步函数（拿不到 crypto.subtle 的结果），而"印了一行 sha256:…"
+// 却没有任何机器核实过，老师读到的就是这台机器说不出来的保证（评审 Task 8 设计问题 1）。
+describe('核对报告：首行、逐帧结论与指纹转录', () => {
+  const pkgOf = (saves: SaveFile[], frames: Record<string, string> = {}): SavePackage => ({
+    format: 'ie-sandbox-save', packageVersion: 1, exportedAt: '2026-10-04T00:00:00.000Z',
+    app: { saveVersion: 4, year: 2, quarter: 3 }, current: createFreshState(), saves,
+    digests: { package: 'sha256:deadbeef00001111', frames },
+  });
+  const noNotes = { mismatch: [], skipped: [] };
+  // 现成的 FrameAudit 夹具：报告断言的是**印面**，判定本身已由上面的 auditFrame 用例钉住，
+  // 这里不再借道真引擎造不平，免得一条断言同时挂着两件事。
+  const mk = (over: Partial<FrameAudit>): FrameAudit => ({
+    saveId: 's1', saveName: '帧s1', year: 1, quarter: 1,
+    flowRebuilt: 20, restatedRebuilt: 20, actualCash: 20,
+    status: 'ok', cause: null, restatementCaliber: 'v4', ...over,
+  });
+  const saveOf = (id: string, timestamp: number, resetCount: unknown): SaveFile =>
+    ({ ...frame(id), timestamp, resetCount } as unknown as SaveFile);
+
+  it('报告首行是能力边界声明，且逐帧结论都在文本里', () => {
+    const boundary = '完整性校验用于发现误操作与随手改数，不构成防作弊保证；成绩判定以运行控制表与实践报告为准。';
+    const pkg = pkgOf([]);
+    const { text, json } = buildAuditReport(pkg, [auditFrame(frame())], boundary, noNotes);
+    expect(text.split('\n')[0]).toBe(boundary);
+    expect(text).toContain('帧s1');
+    // 新档帧：统计行必须把"旧档判定"单列出来（评审 round-3 new finding #1 的印面验收）
+    expect(text).toContain('其中旧档 version<4 的判定 0 条');
+    expect(text).toContain('本帧按 v4 口径判定');
+    expect(JSON.parse(json).boundary).toBe(boundary);
+    expect(JSON.parse(json).packageDigest).toBe('sha256:deadbeef00001111');
+  });
+
+  it('边界句与两条余地是导出的常量：文本与 JSON 都带同一份（Task 9 复用，不各写一遍）', () => {
+    expect(INTEGRITY_BOUNDARY).toBe('完整性校验用于发现误操作与随手改数，不构成防作弊保证；成绩判定以运行控制表与实践报告为准。');
+    expect(INTEGRITY_CAVEATS).toHaveLength(2);
+    expect(INTEGRITY_CAVEATS[0]).toContain('旧档');
+    expect(INTEGRITY_CAVEATS[0]).toContain('不等于篡改');
+    expect(INTEGRITY_CAVEATS[1]).toContain('毫秒');
+
+    const { text, json } = buildAuditReport(pkgOf([]), [mk({})], INTEGRITY_BOUNDARY, noNotes);
+    expect(INTEGRITY_CAVEATS.every(c => text.includes(c))).toBe(true);
+    expect(JSON.parse(json).caveats).toEqual(INTEGRITY_CAVEATS);
+  });
+
+  it('指纹判定只转录面板给的两张表，并说明判定出自生成本报告的这台机器', () => {
+    const notes = {
+      mismatch: ['帧s1 的指纹与包内记录不一致'],
+      skipped: ['帧s2：哈希未计算（非 HTTPS 环境）', '帧s3：哈希无法计算（帧结构异常）'],
+    };
+    const { text, json } = buildAuditReport(pkgOf([]), [mk({})], INTEGRITY_BOUNDARY, notes);
+    expect(notes.mismatch.every(l => text.includes(l))).toBe(true);
+    expect(notes.skipped.every(l => text.includes(l))).toBe(true);
+    expect(text).toContain('不符 1 条');
+    expect(text).toContain('未计算或无法比对 2 条');
+    // 这一句是本报告的立身之本：没有它，读者会把「转录」读成「本机已核实」
+    expect(text).toContain('本机');
+    const parsed = JSON.parse(json);
+    expect(parsed.digestMismatch).toEqual(notes.mismatch);
+    expect(parsed.digestSkipped).toEqual(notes.skipped);
+  });
+
+  it('包内声明的逐帧指纹原样进 JSON（frameDigests），不改写也不重算', () => {
+    const frames = { s1: 'sha256:0123456789abcdef', s2: 'unavailable:insecure-context' };
+    const parsed = JSON.parse(buildAuditReport(pkgOf([], frames), [mk({})], INTEGRITY_BOUNDARY, noNotes).json);
+    expect(parsed.frameDigests).toEqual(frames);
+    expect(parsed.exportedAt).toBe('2026-10-04T00:00:00.000Z');
+  });
+
+  it('no-anchor 帧：不附口径文案，null 读数一律印「—」', () => {
+    // 真跑一遍审计（把日志清空 → 无种子 → no-anchor），免得夹具与实现各说各话
+    const empty = frame('s9', s => { s.operation.financialLogs = []; });
+    const result = auditFrame(empty);
+    expect(result.status).toBe('no-anchor');
+    expect(result.restatementCaliber).toBe('v4');                 // 夹具确实是 v4 档，下面那句抑制才有意义
+    const { text } = buildAuditReport(pkgOf([empty]), [result], INTEGRITY_BOUNDARY, noNotes);
+    expect(text).toContain('起算链不完整');
+    expect(text).not.toContain(CALIBER_TEXT.v4);                   // 抑制规则：两侧都没算成的帧不谈 B 侧读数身份
+    expect(text).not.toMatch(/nullM|NaNM|InfinityM/);
+    expect(text).toMatch(/按流水重建 —.*按重述串重建 —/);
+  });
+
+  it('旧档的不符在帧统计行单列（与面板同一口径，legacyMismatch）', () => {
+    const results = [
+      mk({}),
+      mk({ saveId: 's2', saveName: '帧s2', status: 'mismatch', cause: 'flow-log',
+           flowRebuilt: 18, restatedRebuilt: 18, actualCash: 198, restatementCaliber: 'legacy-unconverted' }),
+      mk({ saveId: 's3', saveName: '帧s3', status: 'mismatch', cause: 'both',
+           flowRebuilt: 1, restatedRebuilt: 2, actualCash: 9, restatementCaliber: 'v4' }),
+    ];
+    const { text, json } = buildAuditReport(pkgOf([]), results, INTEGRITY_BOUNDARY, noNotes);
+    expect(text).toContain('共 3，通过 1，不符 2（其中旧档 version<4 的判定 1 条');
+    expect(text).toContain(CALIBER_TEXT['legacy-unconverted']);
+    expect(text).toContain('不等于篡改');                          // 旧档那句判据与 v4 帧逐字相同，只能靠文案分开
+    expect(JSON.parse(json).summary.legacyMismatch).toBe(1);
+  });
+
+  it('重置次数与 S-T7 预览同一条规则：取最近一帧，空包与非有限都给「—」', () => {
+    const older = saveOf('a', 5, 2);
+    const newer = saveOf('b', 9, 3);
+    const tie2 = saveOf('m2', 9, 7);
+    const tie1 = saveOf('m1', 9, 8);
+
+    const of = (saves: SaveFile[]) => buildAuditReport(pkgOf(saves), [mk({})], INTEGRITY_BOUNDARY, noNotes).text;
+    expect(of([older, newer])).toContain('重置次数：3');
+    // 同一毫秒的两帧：必须与 audit.ts:124 用同一个 localeCompare 兜底，否则报告与预览取到不同帧
+    expect(of([tie1, tie2])).toContain('重置次数：7');
+    expect(of([])).toContain('重置次数：—');                        // 绝不凭空印 0
+    expect(of([saveOf('c', 1, Number.NaN)])).toContain('重置次数：—');
+    expect(of([saveOf('d', 1, '2')])).toContain('重置次数：—');
+  });
+
+  it('JSON 给得出脚本要的全部字段，不必回头解析散文', () => {
+    const bad = mk({ saveId: 's2', saveName: '帧s2', year: 2, quarter: 1, status: 'mismatch',
+                     cause: 'restated-log', flowRebuilt: 20, restatedRebuilt: 5, actualCash: 20 });
+    const { json } = buildAuditReport(pkgOf([]), [mk({}), bad], INTEGRITY_BOUNDARY,
+      { mismatch: [], skipped: ['帧s9：哈希未计算（包内无记录）'] });
+    const parsed = JSON.parse(json);
+    expect(Object.keys(parsed).sort()).toEqual([
+      'boundary', 'caveats', 'digestMismatch', 'digestSkipped', 'diverging', 'exportedAt', 'frameDigests',
+      'frames', 'generatedAt', 'packageDigest', 'resetCount', 'summary',
+    ]);
+    expect(parsed.frames).toHaveLength(2);
+    expect(parsed.summary).toEqual({ total: 2, ok: 1, mismatch: 1, noAnchor: 0, legacyMismatch: 0 });
+    // 分歧起点：数据而非散文（脚本要能直接读走是哪一帧、什么性质）
+    expect(parsed.diverging).toMatchObject({ saveId: 's2', saveName: '帧s2', year: 2, quarter: 1,
+      status: 'mismatch', cause: 'restated-log', restatementCaliber: 'v4' });
+    expect(parsed.resetCount).toBeNull();                          // 包内无历史帧 → null，而不是编一个 0
+  });
+
+  it('分歧起点行：旧档帧带「先排除历史版本」前缀，全平时说未发现分歧', () => {
+    const legacyBad = mk({ saveId: 's7', saveName: '帧s7', year: 3, quarter: 2, status: 'mismatch',
+                           cause: 'flow-log', restatementCaliber: 'legacy-converted' });
+    const text1 = buildAuditReport(pkgOf([]), [legacyBad], INTEGRITY_BOUNDARY, noNotes).text;
+    expect(text1).toContain('分歧起点：（该帧 version<4，先排除历史版本缺日志再谈篡改）帧s7（第3年第2季）');
+    const allOk = buildAuditReport(pkgOf([]), [mk({})], INTEGRITY_BOUNDARY, noNotes);
+    expect(allOk.text).toContain('分歧起点：未发现账实分歧');
+    expect(JSON.parse(allOk.json).diverging).toBeNull();
+  });
+
+  it('报告是同步函数：只转录面板算好的指纹，不在这里碰 crypto', () => {
+    const report = buildAuditReport(pkgOf([]), [mk({})], INTEGRITY_BOUNDARY, noNotes);
+    // 若实现改成异步（在报告里重算指纹），这里拿到的就是 Promise，text/json 均为 undefined，
+    // 上面每条用例与浏览器侧的下载都会当场失败
+    expect(typeof report.text).toBe('string');
+    expect(typeof report.json).toBe('string');
   });
 });

@@ -11,10 +11,29 @@ import { canonicalStringify, digestFrame, digestText } from './saveDigest';
 
 const pad = (n: number): string => String(n).padStart(2, '0');
 
+// 单一企业（规格 §3.2 课程约束）：文件名的企业前缀只写这一次，存档包与核对报告共用
+const ENTERPRISE_LABEL = '企业1';
+
+// 到分钟的时间戳后缀：月/日/时/分补零，保证按文件名字典序排即按时间排。
+// 不含秒——同一分钟内多次导出本就该是同一次进度。
+const stampSuffix = (at: Date): string =>
+  `${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}${pad(at.getHours())}${pad(at.getMinutes())}`;
+
 // 导出文件名：企业1存档-第Y年第Q季-YYYYMMDDHHmm.json（规格 §4.2）。
-// 月/日/时/分补零，保证按文件名字典序排即按时间排；不含秒——同一分钟内多次导出本就该是同一次进度。
 export function packageFileName(year: number, quarter: number, at: Date = new Date()): string {
-  return `企业1存档-第${year}年第${quarter}季-${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}${pad(at.getHours())}${pad(at.getMinutes())}.json`;
+  return `${ENTERPRISE_LABEL}存档-第${year}年第${quarter}季-${stampSuffix(at)}.json`;
+}
+
+// 核对报告的文件名（规格 §4.5 报告内容第一项就是「文件名」）：与存档包同一条命名规则
+// （年季 + 到分钟的时间戳、同样的补零），只把用途换成「核对报告」，所以一份报告与它所依据的那份包
+// 在文件管理器里排在一起、认得出对应关系。txt 给人快速读，json 给教师留存批注（§4.5）。
+export function auditReportFileName(
+  year: number,
+  quarter: number,
+  ext: 'txt' | 'json',
+  at: Date = new Date(),
+): string {
+  return `${ENTERPRISE_LABEL}核对报告-第${year}年第${quarter}季-${stampSuffix(at)}.${ext}`;
 }
 
 // 与 saveGame 同一套快照写法（enterpriseStore.ts:398）：包里的字节一旦算过就固定下来，

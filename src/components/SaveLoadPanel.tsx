@@ -3,45 +3,22 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useEnterpriseStore } from '../store/enterpriseStore';
 import { SaveFile, SavePackage } from '../types/enterprise';
-import { buildSavePackage, packageFileName, parseSavePackage, serializePackage } from '../utils/savePackage';
+import { auditReportFileName, buildSavePackage, packageFileName, parseSavePackage, serializePackage } from '../utils/savePackage';
 // 文案表与判据同源（Task 3 的 audit.ts）：UI 只照抄，绝不再自行读 SaveFile.version 推断
 // （一条规则写两处就是版本漂移的起点，见 audit.ts 里 FrameAudit.restatementCaliber 的说明）
-import { auditFrames, auditSummary, CAUSE_TEXT, CALIBER_TEXT, firstDivergingFrame } from '../utils/audit';
+// Task 8 起，「读数→印面」住在 utils/format.ts、「一帧结论的一行」住在 audit.ts：
+// 核对报告（audit.ts）要用同一份措辞，而 util 不能反向 import 组件（设计问题 2）
+import {
+  auditFrames, auditSummary, buildAuditReport, byTimeThenId, caliberNotesOf, firstDivergingFrame,
+  formatFrameAudit, INTEGRITY_BOUNDARY, packageResetCount, packageResetCountText,
+} from '../utils/audit';
 import type { FrameAudit } from '../utils/audit';
+import { money, moneySum } from '../utils/format';
 import { digestFrame } from '../utils/saveDigest';
 
 // ══ 印面（导出给 tests/saveImport.test.ts：本仓库测试环境是 node、无 jsdom，规格 §7）═══════
-// 读数→文案这三条看着琐碎，踩的却是真坑：审计**刻意**给 null（规格 §4.4「null 而非 NaN」），
-// 而 `${null}M` 印出来是 "nullM"；包里的 resetCount 与 loans[].principal 都不在 Task 6 的结构
-// 校验口径内（残留项），手改过的文件给得出字符串与 undefined。判"能不能印"这件事只能有一处写法。
-export const money = (value: number | null | undefined): string =>
-  typeof value === 'number' && Number.isFinite(value) ? `${value}M` : '—';
-
-// 合计：条目里出现非有限读数就整项作废并明说「数据异常」——把 undefined 静默当 0 计入，
-// 印出来是一个**看起来合理但偏低**的合计，比报错更坏。
-export const moneySum = (values: unknown[]): string => {
-  let total = 0;
-  for (const value of values) {
-    if (typeof value !== 'number' || !Number.isFinite(value)) return '—（数据异常）';
-    total += value;
-  }
-  return money(total);
-};
-
-// 不带单位的整数读数（重置次数）：非有限即「—」，与 money 同一条判据
-export const readNumber = (value: unknown): string =>
-  typeof value === 'number' && Number.isFinite(value) ? `${value}` : '—';
-
-/** 一帧核对结论的一行措辞。
- *  no-anchor 不附口径文案：那一档说的是「B 侧读数的身份」，而这一帧两侧都没算成，
- *  附上「本帧按 v4 口径判定…」会变成自相矛盾的印面。
- *  mismatch 附 CALIBER_TEXT：旧档（version<4）天然不平印出来的那句「流水条目与现金不符」
- *  与 v4 帧上的篡改判定**逐字相同**，只有这条文案能把「不符 ≠ 篡改」说出来（规格 §4.4、评审 round-3）。 */
-export const formatFrameAudit = (result: FrameAudit): string =>
-  result.status === 'no-anchor'
-    ? `${result.saveName}：起算链不完整（缺期初现金种子），本帧现金 ${money(result.actualCash)}`
-    : `${result.saveName}（第${result.year}年第${result.quarter}季）：账实不符（${CAUSE_TEXT[result.cause ?? 'both']}），`
-      + `流水重演算 ${money(result.flowRebuilt)} / 帧末现金 ${money(result.actualCash)}；${CALIBER_TEXT[result.restatementCaliber]}`;
+// 这里只留**指纹**那两条——它们是 S-T7 预览独有的读法；金额与一帧结论的措辞已搬到
+// utils/format.ts 与 audit.ts（理由见上面那几行注释）。
 
 /** 「可比对的指纹」只认 sha256: 前缀（Task 4 的返回契约：另一支恒为 `unavailable:<原因>`）。
  *  包内声明与本侧重算出来的都要过一次：换设备 / 非 HTTPS 导入时本机没有 crypto.subtle，
@@ -64,9 +41,28 @@ export const digestSkipNote = (saveName: string, declared: string | undefined): 
   return `${saveName}：哈希未计算${reason ? `（${reason}）` : '（包内无记录）'}`;
 };
 
+// 下载：Blob → createObjectURL → appendChild → click → removeChild → revokeObjectURL
+// （仓库既有写法，见 OperationCenter.tsx:471-485 的日志导出与 :625-633 的控制表导出）。
+// 三处产物共用这一条：存档包 .json、核对报告 .txt / .json。
+// BOM 只有 CSV 加（Windows Excel 认中文，OperationCenter.tsx:625），这里两类产物都**不加**——
+// BOM 会让 JSON.parse 与 python json.loads 当场报错（规格 §4.2），.txt 加了也会在 diff 里多一个隐形字符。
+const downloadFile = (fileName: string, content: string, mime: string): void => {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
 // 预览结论（此刻**尚未改动存档与当前屏**，规格 §4.3 第 4 步；唯一的 store 写是 validationError 那条消息字段）
 interface ImportPreview {
   pkg: SavePackage;
+  // 逐帧结论的**原始数据**（Task 8 起）：报告要的是它本身，而不是 mismatches 那几行已印好的文案
+  results: FrameAudit[];
   summary: ReturnType<typeof auditSummary>;
   mismatches: string[];
   digestMismatch: string[];
@@ -122,17 +118,7 @@ const SaveLoadPanel: React.FC = () => {
     try {
       const pkg = await buildSavePackage(state, getSaveFiles());
       const fileName = packageFileName(pkg.app.year, pkg.app.quarter);
-      // 下载复用运行控制表导出同一套写法（OperationCenter.tsx:625-633），只有一处不同：
-      // JSON 不加 BOM——BOM 会让 JSON.parse 与 python json.loads 直接报错（规格 §4.2）
-      const blob = new Blob([serializePackage(pkg)], { type: 'application/json;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadFile(fileName, serializePackage(pkg), 'application/json');
       addOperationLog('导出存档', `存档包：${fileName}`);
     } catch (error) {
       // 失败要说得出原因（重复 id 之类是 buildSavePackage 抛的中文说明），不能只留在控制台
@@ -192,12 +178,11 @@ const SaveLoadPanel: React.FC = () => {
           digestSkipped.push(`${save.name}：哈希无法计算（帧结构异常）`);
         }
       }
-      const caliberNotes = Array.from(new Set(results.map((r) => CALIBER_TEXT[r.restatementCaliber])));
+      // 口径清单：抑制规则与报告同一条（audit.ts 的 caliberNotesOf / frameCaliberNote），两处不能一个说一个不说
+      const caliberNotes = caliberNotesOf(results);
       // 时间跨度取 createdAt（规格 §4.3），按 timestamp 定最早/最新、同毫秒按 id 兜底：
-      // 兜底必须与 audit.ts:124 用同一个 localeCompare——`a.id < b.id` 对大小写与 `_` 的排序和它不同
-      // （实测 56 对 id 里 20 对不一致），只在两帧同毫秒时可观察，但那决定了 span 与重置次数取哪一帧（评审 Task 7 finding 5）。
-      const byTimeThenId = (a: SaveFile, b: SaveFile) =>
-        (a.timestamp - b.timestamp) || a.id.localeCompare(b.id);
+      // 兜底用的就是 audit.ts 那份全序比较器（`a.id < b.id` 与 localeCompare 对大小写与 `_` 的排序不同，
+      // 实测 56 对 id 里 20 对不一致），只在两帧同毫秒时可观察，但那决定了 span 与重置次数取哪一帧（评审 Task 7 finding 5）。
       let earliest = frames[0];
       let latest = frames[0];
       for (const save of frames) {
@@ -207,14 +192,12 @@ const SaveLoadPanel: React.FC = () => {
       const spanText = pkg.saves.length > 0
         ? `${earliest.createdAt} → ${latest.createdAt}`
         : '包内无历史帧（仅当前屏）';
-      // 重置次数是 **SaveFile** 的字段、不在 current 里，只能取最近那一帧的；没有历史帧就给「—」而不是 0
-      const resetCountText = pkg.saves.length > 0 ? readNumber(latest.resetCount) : '—';
-      // 印面与"设为当前进度"要落的是同一个数：同一个 latest 帧、同一道 Number.isFinite 判据
-      const resetCountValue = pkg.saves.length > 0
-        && typeof latest.resetCount === 'number' && Number.isFinite(latest.resetCount)
-        ? latest.resetCount : null;
+      // 重置次数是 **SaveFile** 的字段、不在 current 里，只能取最近那一帧的；没有历史帧就给「—」而不是 0。
+      // 这条规则（同一个 latest、同一道 Number.isFinite 判据）现在住在 audit.ts，报告与预览共用（Task 8）。
+      const resetCountText = packageResetCountText(pkg);
+      const resetCountValue = packageResetCount(pkg);
       setPending({
-        pkg, summary: auditSummary(results), mismatches, digestMismatch, digestSkipped,
+        pkg, results, summary: auditSummary(results), mismatches, digestMismatch, digestSkipped,
         diverging, caliberNotes, spanText, resetCountText, resetCountValue,
       });
     } catch (error) {
@@ -250,9 +233,26 @@ const SaveLoadPanel: React.FC = () => {
     setIsOpen(false);
   };
 
+  // 导出核对报告（规格 §4.5）：两个按钮、**同一份数据源**——逐帧结论用 pending.results（预览当场算的那份），
+  // 指纹判定用 pending.digestMismatch / digestSkipped（S-T7 的异步哈希循环刚算完的两张表）。
+  // 报告自己不再算一次指纹：它是同步函数，而重算需要 WebCrypto，且会变成同一件事的第二套实现
+  // （Task 8 设计问题 1）。也因此这里没有 exporting 那样的异步态。
+  // 只读动作：不受 isPaused 禁用（规格 §7 第 10 条）。也**不写操作日志**——存档包导出写日志是因为它
+  // 是"一次交付动作"，而报告要在核对过程中反复点；addOperationLog 会改当前屏的日志，
+  // 让「同一份包再核对一次」时的本机状态与刚点开预览时不一致，核对动作应当不留痕。
+  const handleExportReport = (ext: 'txt' | 'json') => {
+    if (!pending) return;
+    const { json, text } = buildAuditReport(pending.pkg, pending.results, INTEGRITY_BOUNDARY, {
+      mismatch: pending.digestMismatch,
+      skipped: pending.digestSkipped,
+    });
+    // 文件名与存档包同一条规则（年季 + 到分钟的时间戳），只把用途换成「核对报告」（§4.5 的「文件名」）
+    const fileName = auditReportFileName(pending.pkg.app.year, pending.pkg.app.quarter, ext);
+    downloadFile(fileName, ext === 'json' ? json : text, ext === 'json' ? 'application/json' : 'text/plain');
+  };
+
   // 加载存档
-  const handleLoadSave = (saveFile: SaveFile) => {
-    loadGame(saveFile);
+  const handleLoadSave = (saveFile: SaveFile) => {    loadGame(saveFile);
     setIsOpen(false);
   };
 
@@ -409,6 +409,26 @@ const SaveLoadPanel: React.FC = () => {
                   运营已暂停，请先继续运营再导入（导出与预览仍可用）
                 </div>
               )}
+
+              {/* 核对报告（规格 §4.5）：两份产物、同一数据源（pending.results + 两张指纹表）。
+                  只读动作，暂停态**照常可用**（§7 第 10 条），所以这里不挂 disabled={isPaused}——
+                  与下面两个落库动作的取舍正好相反，面板上方那条琥珀色提示说的就是这层区分。 */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleExportReport('txt')}
+                  title="下载纯文本核对报告：首行是能力边界声明，随后是逐帧结论与指纹判定"
+                  className="flex-1 bg-white border border-gray-400 text-gray-800 px-3 py-2 rounded-md text-sm hover:bg-gray-100 transition-colors"
+                >
+                  导出核对报告（txt）
+                </button>
+                <button
+                  onClick={() => handleExportReport('json')}
+                  title="下载 JSON 核对报告：同一份数据的机读版，脚本可直接读 frames、summary 与两张指纹表"
+                  className="flex-1 bg-white border border-gray-400 text-gray-800 px-3 py-2 rounded-md text-sm hover:bg-gray-100 transition-colors"
+                >
+                  导出核对报告（json）
+                </button>
+              </div>
 
               <div className="flex gap-2 pt-1">
                 <button
