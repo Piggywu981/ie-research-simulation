@@ -1311,9 +1311,11 @@ git commit -m "feat(save): 存档包导入预览与非覆盖落库，暂停态�
 ## Task 8: 核对报告导出
 
 **Files:**
-- Modify: `src/utils/audit.ts`（新增 `buildAuditReport`，与 `FrameAudit` 同域，不分新文件）
+- Modify: `src/utils/audit.ts`（新增 `buildAuditReport`，与 `FrameAudit` 同域，不分新文件；`formatFrameAudit` 从组件搬进来）
 - Modify: `src/components/SaveLoadPanel.tsx`
-- Test: `tests/audit.test.ts`（追加报告文本断言）
+- Create: `src/utils/format.ts`（`money`/`moneySum`/`readNumber` 从组件搬出来，见 Step 3 校正 3）
+- Modify: `src/utils/savePackage.ts`（`auditReportFileName`，与 `packageFileName` 共用命名规则）
+- Test: `tests/audit.test.ts`（追加报告文本断言）、`tests/saveImport.test.ts`（只改 import 来源，断言不动）
 
 **Interfaces:**
 - Consumes: `FrameAudit`、`CAUSE_TEXT`、`CALIBER_TEXT`、`firstDivergingFrame`、`auditSummary`（含 `legacyMismatch`）、`SavePackage`、既有 Blob 下载写法
@@ -1329,7 +1331,7 @@ import { buildAuditReport } from '../src/utils/audit';
     const pkg = { format: 'ie-sandbox-save', packageVersion: 1 as const, exportedAt: '2026-10-04T00:00:00.000Z',
       app: { saveVersion: 4, year: 1, quarter: 1 }, current: createFreshState(), saves: [],
       digests: { package: 'sha256:deadbeef00001111', frames: {} } };
-    const { text, json } = buildAuditReport(pkg, [auditFrame(frame())], boundary);
+    const { text, json } = buildAuditReport(pkg, [auditFrame(frame())], boundary, { mismatch: [], skipped: [] });
     expect(text.split('\n')[0]).toBe(boundary);
     expect(text).toContain('帧s1');
     // 新档帧：统计行必须把"旧档判定"单列出来（评审 round-3 new finding #1 的印面验收）
@@ -1347,46 +1349,67 @@ Expected: FAIL —— `buildAuditReport` 未导出。
 
 - [ ] **Step 3: 实现**
 
+> **2026-10-04 落地校正（Task 8 实现期，四处）**
+> 1. **签名多一个必填参数**：`digestFrame` / `digestText` 是异步的，而「指纹不符 / 未计算」这两个**判定**是 Task 7 的 `handleFilePicked` 当场算出来的。同步的报告若自己去算，就成了同一件事的第二套实现；若只转录包内**声明**却不说明是谁算的，老师会把"这台机器算不出"读成"已核实"。故第四个参数把面板已算好的两张表传进来：
+>    `buildAuditReport(pkg, results, boundaryLine, digestNotes: { mismatch: string[]; skipped: string[] })`，
+>    文本与 JSON（`digestMismatch` / `digestSkipped`）都带上，并印一行「判定出自生成这份报告的本机」。
+> 2. **`${r.actualCash}M` 这类裸插值必须换成 `money(r.actualCash)`**：审计**刻意**给 `null`（§4.4「null 而非 NaN」），裸插值会给 no-anchor 帧印出 `nullM`。同理 `resetCount` 走 `readNumber`。
+> 3. **`money` / `moneySum` / `readNumber` 搬到新建的 `src/utils/format.ts`，`formatFrameAudit` 搬到 `audit.ts`**（不是 `format.ts`：它逐字组装 `CAUSE_TEXT`/`CALIBER_TEXT`，是审计词汇表的消费者）。理由：报告住在 util `audit.ts`，而 util 不能反向 import `.tsx`；面板与报告必须印得一样。`digestSkipNote`/`isComparableDigest` 留在组件——只有指纹读法用得上，报告不需要。`tests/saveImport.test.ts` 的 import 来源随之改写（断言一字未改）。
+> 4. **能力边界句与两条余地导出成常量** `INTEGRITY_BOUNDARY` / `INTEGRITY_CAVEATS`（住在 `audit.ts`），Task 9 的规则弹窗与 README 直接 import 同一份，不许各写一遍。报告首行仍是边界句本身，两条余地紧随其后。
+
 ```ts
 export function buildAuditReport(
   pkg: SavePackage,
   results: FrameAudit[],
   boundaryLine: string,
+  digestNotes: { mismatch: string[]; skipped: string[] },
 ): { json: string; text: string } {
   const summary = auditSummary(results);
   const diverging = firstDivergingFrame(results);
-  // no-anchor 帧不附口径文案（理由见 Task 7 的 mismatches 映射处）
+  // no-anchor 帧不附口径文案（理由见 Task 7 的 mismatches 映射处）——抑制规则单点成 frameCaliberNote()
   const caliberNote = (r: FrameAudit) => (r.status === 'no-anchor' ? '' : `；${CALIBER_TEXT[r.restatementCaliber]}`);
   const lines = [
     boundaryLine,
     '',
+    '能力边界的两条余地（实测得出，不是假想）：',
+    ...INTEGRITY_CAVEATS.map((c) => `· ${c}`),
+    '',
+    `报告生成时间：${generatedAt}`,
     `导出时间：${pkg.exportedAt}`,
+    `重置次数：${packageResetCountText(pkg)}（取包内最近一帧；无历史帧时给「—」而不是 0）`,
     `包指纹：${pkg.digests.package}`,
     // 两个指纹覆盖的字段不同，报告里必须说清（评审 Task 4 item 4）：逐帧指纹按规格只包
     // {id,timestamp,version,resetCount,state}，而包壳含整份 SaveFile（name/enterpriseName/createdAt 都在内）——
     // 只改存档名就会呈现"包指纹不符 + 逐帧全通过"，不写这行它读起来像篡改。
     `指纹口径：包指纹覆盖整包字节（digests 自身除外；含存档名/企业名/createdAt）；逐帧指纹只覆盖 {id,timestamp,version,resetCount,state}，仅改名会动包指纹而不动逐帧指纹。`,
+    // 判定出自生成本报告这台机器（它是转录，不是本机重新核实过）
+    `指纹判定（由生成这份报告的本机在导入预览那一刻算出…）：不符 ${digestNotes.mismatch.length} 条，未计算或无法比对 ${digestNotes.skipped.length} 条`,
+    ...digestNotes.mismatch.map((l) => `  指纹不符 · ${l}`),
+    ...digestNotes.skipped.map((l) => `  指纹未计算 · ${l}`),
     `帧统计：共 ${summary.total}，通过 ${summary.ok}，不符 ${summary.mismatch}（其中旧档 version<4 的判定 ${summary.legacyMismatch} 条，其"不符"不等于篡改），起算链不完整 ${summary.noAnchor}`,
     `分歧起点：${diverging
       ? `${diverging.restatementCaliber !== 'v4' ? '（该帧 version<4，先排除历史版本缺日志再谈篡改）' : ''}${diverging.saveName}（第${diverging.year}年第${diverging.quarter}季）`
       : '未发现账实分歧'}`,
     '',
     ...results.map((r) => r.status === 'ok'
-      ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${r.actualCash}M${caliberNote(r)}）`
-      : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] ${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${r.flowRebuilt}M，按重述串重建 ${r.restatedRebuilt}M，帧内现金 ${r.actualCash}M${caliberNote(r)}）`),
+      ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${money(r.actualCash)}${caliberNote(r)}）`
+      : `[${r.status === 'no-anchor' ? '起算链不完整' : `账实不符（${CAUSE_TEXT[r.cause ?? 'both']}）`}] ${r.saveName}（第${r.year}年第${r.quarter}季，按流水重建 ${money(r.flowRebuilt)}，按重述串重建 ${money(r.restatedRebuilt)}，帧内现金 ${money(r.actualCash)}${caliberNote(r)}）`),
   ];
   return {
     text: lines.join('\n'),
-    json: JSON.stringify({ boundary: boundaryLine, exportedAt: pkg.exportedAt, packageDigest: pkg.digests.package, frameDigests: pkg.digests.frames, summary, frames: results }, null, 2),
+    json: JSON.stringify({ boundary: boundaryLine, caveats: INTEGRITY_CAVEATS, generatedAt, exportedAt: pkg.exportedAt,
+      resetCount: packageResetCount(pkg), packageDigest: pkg.digests.package, frameDigests: pkg.digests.frames,
+      digestMismatch: digestNotes.mismatch, digestSkipped: digestNotes.skipped, summary, diverging, frames: results }, null, 2),
   };
 }
 ```
 
-放 `src/utils/audit.ts`（与 `FrameAudit` 同域），在文件顶部补 `import type { SavePackage } from '../types/enterprise';`。
+放 `src/utils/audit.ts`（与 `FrameAudit` 同域），在文件顶部补 `import type { SavePackage } from '../types/enterprise';` 与 `import { money, readNumber } from './format';`。
+`diverging` 进 JSON 的是**帧对象本身**（saveId/status/cause/restatementCaliber 都在内），脚本不必用正则啃中文行；包内无历史帧时 `resetCount` 是 `null` 而不是 0。
 
 - [ ] **Step 4: 面板接线**
 
-预览面板加「导出核对报告」按钮，一次点击产 `.txt`，`.json` 通过同一数据源的第二按钮；两者都走既有 Blob 写法（`.txt` 无需 BOM，`.json` 明确不加）。按钮为只读动作，不受暂停影响。
+预览面板加「导出核对报告（txt）」与「导出核对报告（json）」两个按钮，各产一件、共用同一数据源（`pending.results` + `pending.digestMismatch/digestSkipped`）；两者都走既有 Blob 写法（抽成 `downloadFile()`，与存档包导出共用；`.txt` 与 `.json` 都不加 BOM，只有 CSV 加）。按钮为只读动作，不受暂停影响（§7 第 10 条），也不写操作日志——核对要能反复点而不改变本机状态。文件名走 `savePackage.ts` 新增的 `auditReportFileName(year, quarter, ext)`，与 `packageFileName` 共用同一条「年季 + 到分钟时间戳」规则与企业名前缀。
 
 - [ ] **Step 5: 跑测试 + 构建**
 
