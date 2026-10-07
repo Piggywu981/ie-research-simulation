@@ -185,30 +185,90 @@ export const formatFrameAudit = (result: FrameAudit): string =>
     : `${result.saveName}（第${result.year}年第${result.quarter}季）：账实不符（${CAUSE_TEXT[result.cause ?? 'both']}），`
       + `流水重演算 ${money(result.flowRebuilt)} / 帧末现金 ${money(result.actualCash)}${frameCaliberNote(result)}`;
 
+// ══ 指纹声明的读法（复审 item 2：从 SaveLoadPanel.tsx 搬进来）═══════════════════
+// 为什么搬：这三条措辞不再是「面板独有的指纹读法」——核对报告也要印同一句（包里声明的包指纹是
+// `unavailable:*` 时，报告不能把内部 token 原样印给老师，规格 §4.4 要的是「哈希未计算（原因）」）。
+// 而报告住在 util `audit.ts`，**util 不能反向 import `.tsx`**（Task 8 设计问题 2 的同一条理由，
+// 也正是 money/format.ts 当初搬出去的理由）。搬到这里而不是 format.ts：format.ts 管的是**金额读数**
+// （money/moneySum/readNumber，与摘要判据无关），而这几条判的是摘要前缀、说的是篡改线索的可信度，
+// 与 CAUSE_TEXT / CALIBER_TEXT 同属审计词汇表；面板本来就 import 本模块，不新增依赖边。
+// 面板的用户可见字符串**逐字未改**（tests/saveImport.test.ts 钉着），只是换了住处：
+// 组件里 import 后再 `export { digestSkipNote, isComparableDigest }` 原名转出，import 路径与断言都不用动。
+
+/** 「可比对的指纹」只认 sha256: 前缀（Task 4 的返回契约：另一支恒为 `unavailable:<原因>`）。
+ *  包内声明与本侧重算出来的都要过一次：换设备 / 非 HTTPS 导入时本机没有 crypto.subtle，
+ *  算出来是 `unavailable:*`，拿它去比包里的 `sha256:` 必然不等——印出来就是「指纹不一致」这条**假**篡改证。
+ *  那种情形只能说「本机算不出」，归入「未计算」那一档（规格 §4.4「无 crypto.subtle → 重演算照常执行」）。 */
+export const isComparableDigest = (value: string | undefined): boolean =>
+  typeof value === 'string' && value.indexOf('sha256:') === 0;
+
+/** 声明值无法比对时的那句「哈希未计算（原因）」；返回 null 表示「声明是 sha256:，可以比值」。
+ *  按 **前缀** 分派（Task 4 实况）：`unavailable:` 后面除了 insecure-context 还可能是摘要调用自身
+ *  失败带出的 bad-digest / 某个 error name，不能只认那一种。空串/缺字段一律算「未计算」，绝不参与比对。
+ *  措辞按规格 §4.4 说人话（不把内部 token 原样印给老师），但仍不猜原因。
+ *  不带帧名的**裸句**：面板那句要在前面拼 `${saveName}：`（digestSkipNote），
+ *  报告的包指纹行只要这句本身——同一份措辞、两种装法，所以拆成两层而不是一句里带死前缀。 */
+export const digestUnavailableNote = (declared: string | undefined): string | null => {
+  // 非字符串一律按"包内无可用声明"处理：`digests.frames` 是外部文件的对象，原型链上的
+  // toString/constructor 之类如果被当值读出来，下一行 declared.replace 会抛 TypeError，
+  // 预览就会印成「读取失败」而不是契约里的「哈希未计算（包内无记录）」（评审 Task 7 finding 1）。
+  if (typeof declared === 'string' && isComparableDigest(declared)) return null;
+  if (declared === 'unavailable:insecure-context') return '哈希未计算（非 HTTPS 环境）';
+  const reason = typeof declared === 'string' && declared ? declared.replace('unavailable:', '') : '';
+  return `哈希未计算${reason ? `（${reason}）` : '（包内无记录）'}`;
+};
+
+/** 面板用的一行：帧名 + 上面那句裸句；返回 null 表示可以比值，由调用方去重算。 */
+export const digestSkipNote = (saveName: string, declared: string | undefined): string | null => {
+  const note = digestUnavailableNote(declared);
+  return note === null ? null : `${saveName}：${note}`;
+};
+
 // ══ 对外文案：能力边界（规格 §4.6，报告首行 / 规则弹窗 / README 三处同一句）═══════════
 // 定在 Task 9 之前是有原因的：那句话要在三个地方出现，任何一处自己写一遍，三处就会各自漂走。
 // 报告的**首行**必须是这句（规格 §4.5），面板把它作为 boundaryLine 传进来，不另写一份。
 export const INTEGRITY_BOUNDARY = '完整性校验用于发现误操作与随手改数，不构成防作弊保证；成绩判定以运行控制表与实践报告为准。';
 
 // §4.6 追加的两条余地：都是实测得出、不是假想。少了它们，报告的「不符」二字会被读成一条铁证。
+// 措辞必须**上下文无关**（复审 item 4）：这份常量被三个地方逐字印——核对报告、规则弹窗、README。
+// 旧写法在句尾挂着「条数见下方帧统计里的…」，那是**报告版面**相对的指代，印进弹窗与 README 就指向 nothing，
+// 于是 Task 9 在那两处各补了一句自造的说明文字当补丁——句子就此有了三个版本。
+// 现在把事实本身写进句子（「由帧统计单列」，说的是那一行的名字，不是它的位置），补丁随之删掉；
+// 不许再出现「下方 / 如上」这类方向词，tests/integrityCopy.test.ts 钉着这条。
 export const INTEGRITY_CAVEATS: string[] = [
   '旧档（version<4）的"不符"不等于篡改：那一版可能存在没写进流水的现金变动，天然就可能对不平；'
-    + '判据只看流水，条数见下方帧统计里的「其中旧档 version<4 的判定 N 条」。',
+    + '判据只看流水，这类判定的条数由帧统计单列（「其中旧档 version<4 的判定 N 条」）。',
   '同一毫秒内的手操是精度盲区：季度推进与主动交易若落在 Date.now() 的同一毫秒，那笔交易既不进重述串、'
     + '也不进尾随流水，会报出一条并不存在的"账实不符"；人工点按隔着秒不会触发，脚本式连点或自动化才可能。',
 ];
 
-// 包内最近的一帧（报告与预览的「重置次数」都取它）。空包给 null——调用方因此**不可能**凭空印出 0。
-export const latestPackageFrame = (pkg: SavePackage): SaveFile | null => {
+/** 包内的时间跨度端点（规格 §4.3 预览那一行「N 帧 / 最早 → 最新」）。
+ *  复审 item 6c：这段定序原本住在组件的 for 循环里，与 latestPackageFrame 是同一条全序的两份实现——
+ *  同毫秒兜底一旦漂回 `a.id < b.id`，预览的跨度与报告的重置次数会各自取到不同的一帧（评审 Task 7 finding 5）。
+ *  收拢到这里：`latest` 就是 latestPackageFrame，面板只消费 text。 */
+export const packageSpan = (pkg: SavePackage): { earliest: SaveFile | null; latest: SaveFile | null; text: string } => {
+  let earliest: SaveFile | null = null;
   let latest: SaveFile | null = null;
   for (const save of pkg.saves) {
+    if (earliest === null || byTimeThenId(save, earliest) < 0) earliest = save;
     if (latest === null || byTimeThenId(save, latest) > 0) latest = save;
   }
-  return latest;
+  // 空包（重置后立刻导出）：面板这一格说的是「只有当前屏」，不是某个孤零零的时间戳
+  return {
+    earliest,
+    latest,
+    text: earliest !== null && latest !== null ? `${earliest.createdAt} → ${latest.createdAt}` : '包内无历史帧（仅当前屏）',
+  };
 };
+
+// 包内最近的一帧（报告与预览的「重置次数」都取它）。空包给 null——调用方因此**不可能**凭空印出 0。
+// 与时间跨度共用同一次扫描、同一条全序（见 packageSpan）。
+export const latestPackageFrame = (pkg: SavePackage): SaveFile | null => packageSpan(pkg).latest;
 
 // 重置次数是 **SaveFile** 的字段、不在 current 里，只能取最近那一帧的；
 // 与 S-T7 预览同一条规则（同一个 latest、同一道 Number.isFinite 判据），所以住在审计里而不是面板里。
+// 判据是 `Number.isFinite` 而**不是真值性**（复审 item 6a）：重置次数 0 是合法读数（重置过一次都没存过档的
+// 新局就是这个数），写成 `latest.resetCount ? … : null` 会把它跟「缺数据」混为一谈，报告就此印「—」。
 export const packageResetCount = (pkg: SavePackage): number | null => {
   const latest = latestPackageFrame(pkg);
   return latest !== null && typeof latest.resetCount === 'number' && Number.isFinite(latest.resetCount)
@@ -230,15 +290,38 @@ export interface AuditDigestNotes {
   skipped: string[];
 }
 
+/** 报告自身的信息（不是包里的数据，面板才知道的）。
+ *  复审 item 7：规格 §4.5 的字段清单里有「文件名」，而报告正文此前只在**产物名**里带着它——
+ *  教师把 txt 拖进邮件附件、截图或念给学生时，那行「报告生成时间」对不上任何一个名字。
+ *  取舍：加一行 `文件名：…`（本项），不去改已批准的规格。未传（旧四参调用、单元测试夹具）时
+ *  文本**不印**这一行、JSON 给 null，绝不印一个空名字糊弄过去。 */
+export interface AuditReportMeta {
+  reportFileName?: string;
+}
+
 export function buildAuditReport(
   pkg: SavePackage,
   results: FrameAudit[],
   boundaryLine: string,
   digestNotes: AuditDigestNotes,
+  meta?: AuditReportMeta,
 ): { json: string; text: string } {
   const summary = auditSummary(results);
   const diverging = firstDivergingFrame(results);
   const generatedAt = new Date().toISOString();
+  // 包指纹这一行的两个要害（复审 item 1 / 2）：
+  // ①它是**声明**，不是本机核实过的结果——导入侧那条异步循环只重算逐帧指纹（digestFrame），
+  //   digestPackage 只在导出时跑过一次。少了这半句，一个逐帧指纹被整批重算过、包指纹被动过的包，
+  //   会在「指纹不符：无」旁边印一行看起来已经核实的 sha256:…（正是 Task 8 设计问题 1 禁止的假保证）。
+  //   所以文本与 JSON 同时带上范围标记，脚本也不许把 packageDigest 读成「本机已验证」。
+  // ②声明本身可能是 `unavailable:<原因>`：那种值不能原样印给老师（规格 §4.4），
+  //   要说「哈希未计算（非 HTTPS 环境）」，措辞与面板同一份（digestUnavailableNote，复审 item 2）。
+  const packageDigestScope = '包内声明值；导入侧只重算逐帧指纹，整包指纹未重算';
+  const declaredPackageNote = digestUnavailableNote(pkg.digests.package);
+  const packageDigestLine = declaredPackageNote === null
+    ? `包指纹：${pkg.digests.package}（${packageDigestScope}）`
+    : `包指纹：${declaredPackageNote}——${packageDigestScope}`;
+  const reportFileName = meta ? meta.reportFileName : undefined;
   // 每个读数都过一次 money()：审计**刻意**给 null（§4.4「null 而非 NaN」），裸插值会印成 "nullM"/"NaNM"
   const frameLines = results.map((r) => r.status === 'ok'
     ? `[通过] ${r.saveName}（第${r.year}年第${r.quarter}季，现金 ${money(r.actualCash)}${frameCaliberNote(r)}）`
@@ -262,10 +345,11 @@ export function buildAuditReport(
     ...INTEGRITY_CAVEATS.map((c) => `· ${c}`),
     '',
     `报告生成时间：${generatedAt}`,
+    ...(reportFileName ? [`文件名：${reportFileName}`] : []),
     `导出时间：${pkg.exportedAt}`,
     `包内进度：第${pkg.app.year}年第${pkg.app.quarter}季（存档格式 v${pkg.app.saveVersion}，历史帧 ${pkg.saves.length} 个）`,
     `重置次数：${packageResetCountText(pkg)}（取包内最近一帧；包内无历史帧时给「—」而不是 0）`,
-    `包指纹：${pkg.digests.package}`,
+    packageDigestLine,
     `逐帧指纹：包内声明 ${Object.keys(pkg.digests.frames).length} 条`,
     // 两个指纹覆盖的字段不同，报告里必须说清（评审 Task 4 item 4）：逐帧指纹按规格只包
     // {id,timestamp,version,resetCount,state}，而包壳含整份 SaveFile（name/enterpriseName/createdAt 都在内）——
@@ -291,9 +375,12 @@ export function buildAuditReport(
       boundary: boundaryLine,
       caveats: INTEGRITY_CAVEATS,
       generatedAt,
+      reportFileName: reportFileName ?? null,
       exportedAt: pkg.exportedAt,
       resetCount: packageResetCount(pkg),
       packageDigest: pkg.digests.package,
+      // 与文本同一件事的机读形态：这个值是**声明**，导入侧从未重算整包指纹（见上面 packageDigestScope）
+      packageDigestScope: 'declared-not-reverified',
       frameDigests: pkg.digests.frames,
       digestMismatch: digestNotes.mismatch,
       digestSkipped: digestNotes.skipped,

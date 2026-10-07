@@ -15,6 +15,7 @@ const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 // 免得断言绑死排版；能力边界那句仍用**原样** readme 比对（那句要求逐字，含标点）。
 const readmePlain = readme.replace(/`/g, '');
 const panelSrc = readFileSync(new URL('../src/components/SaveLoadPanel.tsx', import.meta.url), 'utf8');
+const modalSrc = readFileSync(new URL('../src/components/RulesModal.tsx', import.meta.url), 'utf8');
 const storeSrc = readFileSync(new URL('../src/store/enterpriseStore.ts', import.meta.url), 'utf8');
 const auditSrc = readFileSync(new URL('../src/utils/audit.ts', import.meta.url), 'utf8');
 
@@ -64,7 +65,10 @@ describe('文案不得描述未实现的能力 / 不得自造印面词汇（Task
   });
 
   it('「哈希未计算」「-imported-N」「（导入N）」在源码里真存在，不是文档虚构', () => {
-    expect(panelSrc).toContain('哈希未计算（非 HTTPS 环境）');
+    // 复审 item 2：这句措辞从组件搬到 audit.ts（报告也要印同一句，而 util 不能 import .tsx），
+    // 所以「真存在」的核对地点随之改成常量所在的那一份源码
+    expect(auditSrc).toContain('哈希未计算（非 HTTPS 环境）');
+    expect(panelSrc).toContain('digestSkipNote');            // 面板仍在用同一份，只是不再自己写一遍
     expect(storeSrc).toContain('-imported-');
     expect(storeSrc).toContain('（导入${n}）');
     // 暂停态只读豁免：文档若写"暂停时也能导出"，源码得真给这条提示
@@ -79,5 +83,44 @@ describe('文案不得描述未实现的能力 / 不得自造印面词汇（Task
     expect(blob).toContain('账实不符');
     expect(blob).toContain('起算链不完整');   // no-anchor 的用户可见说法（audit.ts:184）
     expect(blob).toContain('哈希未计算');
+  });
+
+  // 复审 item 4：这句常量现在被三个地方印（报告 / 弹窗 / README）。旧写法在句尾挂着「条数见下方帧统计里的…」，
+  // 那是**报告版面**相对的指代——印在弹窗与 README 里指向nothing，Task 9 因此在两处各补了一句自造的
+  // 说明文字（症状补丁），句子于是有了第四个、第五个版本。修法是句子本身改成上下文无关的说法，
+  // 补丁随之删掉；本例钉住"不许再写方向词"，让补丁没法长回来。
+  it('两条余地自带完整含义，不靠版面指代；三处之外不许再加自造的说明句', () => {
+    INTEGRITY_CAVEATS.forEach((caveat) => {
+      expect(caveat).not.toMatch(/下方|如上|上述|见上|见下/);
+    });
+    expect(modalSrc).not.toMatch(/下方|见核对报告的帧统计行/);
+    expect(readme).not.toMatch(/下方帧统计|其中提到的/);
+    // 唯一来源：弹窗与 README 都只能引常量，不能重打句子
+    expect(modalSrc).toContain('...INTEGRITY_CAVEATS');
+    expect(readme).toContain(INTEGRITY_CAVEATS[0]);
+  });
+});
+
+// ══ 面板与报告共用同一份实现（复审 items 2 / 3 / 6c）════════════════════════════
+// 与上面几例同一套办法：node 环境、无 jsdom（规格 §7），渲染不了组件就核对**渲染要用到的源码**。
+describe('面板接线：跨度取审计侧的 packageSpan，报告导出有失败面', () => {
+  it('时间跨度用 audit.ts 的 packageSpan，组件里不再留第二份定序', () => {
+    expect(auditSrc).toContain('export const packageSpan');
+    expect(panelSrc).toContain('packageSpan(');
+    // 组件里自己再写一遍 byTimeThenId 循环 = 同毫秒兜底又漂成两份（评审 Task 7 finding 5 的形态）
+    expect(panelSrc).not.toMatch(/byTimeThenId\s*\(/);
+  });
+
+  it('handleExportReport 与存档包导出同级：build 与 download 都在 try 里，原因用 error.message', () => {
+    const body = /const handleExportReport[\s\S]*?\n  \};/.exec(panelSrc);
+    expect(body).not.toBeNull();
+    const src = body![0];
+    expect(src).toContain('try {');
+    expect(src).toContain('} catch');
+    expect(src).toContain('setValidationError(');
+    // Task 5 定的规矩：name 会把中文说明吞掉，能说的是 message
+    expect(src).toContain('error.message');
+    expect(src).not.toContain('error.name');
+    expect(src).toContain('downloadFile(');
   });
 });

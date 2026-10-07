@@ -9,37 +9,18 @@ import { auditReportFileName, buildSavePackage, packageFileName, parseSavePackag
 // Task 8 起，「读数→印面」住在 utils/format.ts、「一帧结论的一行」住在 audit.ts：
 // 核对报告（audit.ts）要用同一份措辞，而 util 不能反向 import 组件（设计问题 2）
 import {
-  auditFrames, auditSummary, buildAuditReport, byTimeThenId, caliberNotesOf, firstDivergingFrame,
-  formatFrameAudit, INTEGRITY_BOUNDARY, packageResetCount, packageResetCountText,
+  auditFrames, auditSummary, buildAuditReport, caliberNotesOf, digestSkipNote, firstDivergingFrame,
+  formatFrameAudit, INTEGRITY_BOUNDARY, isComparableDigest, packageResetCount, packageResetCountText, packageSpan,
 } from '../utils/audit';
 import type { FrameAudit } from '../utils/audit';
 import { money, moneySum } from '../utils/format';
 import { digestFrame } from '../utils/saveDigest';
 
-// ══ 印面（导出给 tests/saveImport.test.ts：本仓库测试环境是 node、无 jsdom，规格 §7）═══════
-// 这里只留**指纹**那两条——它们是 S-T7 预览独有的读法；金额与一帧结论的措辞已搬到
-// utils/format.ts 与 audit.ts（理由见上面那几行注释）。
-
-/** 「可比对的指纹」只认 sha256: 前缀（Task 4 的返回契约：另一支恒为 `unavailable:<原因>`）。
- *  包内声明与本侧重算出来的都要过一次：换设备 / 非 HTTPS 导入时本机没有 crypto.subtle，
- *  算出来是 `unavailable:*`，拿它去比包里的 `sha256:` 必然不等——印出来就是「指纹不一致」这条**假**篡改证。
- *  那种情形只能说「本机算不出」，归入「未计算」那一档（规格 §4.4「无 crypto.subtle → 重演算照常执行」）。 */
-export const isComparableDigest = (value: string | undefined): boolean =>
-  typeof value === 'string' && value.indexOf('sha256:') === 0;
-
-/** 包内指纹声明无法比对时的一行说明；返回 null 表示「声明是 sha256:，可以比值」，由调用方去重算。
- *  按 **前缀** 分派（Task 4 实况）：`unavailable:` 后面除了 insecure-context 还可能是摘要调用自身
- *  失败带出的 bad-digest / 某个 error name，不能只认那一种。空串/缺字段一律算「未计算」，绝不参与比对。
- *  措辞按规格 §4.4 说人话（不把内部 token 原样印给老师），但仍不猜原因。 */
-export const digestSkipNote = (saveName: string, declared: string | undefined): string | null => {
-  // 非字符串一律按"包内无可用声明"处理：`digests.frames` 是外部文件的对象，原型链上的
-  // toString/constructor 之类如果被当值读出来，下一行 declared.replace 会抛 TypeError，
-  // 预览就会印成「读取失败」而不是契约里的「哈希未计算（包内无记录）」（评审 Task 7 finding 1）。
-  if (typeof declared === 'string' && isComparableDigest(declared)) return null;
-  if (declared === 'unavailable:insecure-context') return `${saveName}：哈希未计算（非 HTTPS 环境）`;
-  const reason = typeof declared === 'string' && declared ? declared.replace('unavailable:', '') : '';
-  return `${saveName}：哈希未计算${reason ? `（${reason}）` : '（包内无记录）'}`;
-};
+// ══ 印面（导出给 tests/saveImport.test.ts：本仓库测试环境是 node、无 jsdom，规格 §7）═══════════
+// 指纹那两条读法复审 item 2 起住在 utils/audit.ts（核对报告要印同一句「哈希未计算（…）」，
+// 而 util 不能反向 import .tsx；理由与 Task 8 把 money/formatFrameAudit 搬出组件同一条）。
+// 这里按**原名转出**：面板内部与 tests/saveImport.test.ts 的 import 路径都不必改，措辞仍只有一份。
+export { digestSkipNote, isComparableDigest };
 
 // 下载：Blob → createObjectURL → appendChild → click → removeChild → revokeObjectURL
 // （仓库既有写法，见 OperationCenter.tsx:471-485 的日志导出与 :625-633 的控制表导出）。
@@ -180,18 +161,12 @@ const SaveLoadPanel: React.FC = () => {
       }
       // 口径清单：抑制规则与报告同一条（audit.ts 的 caliberNotesOf / frameCaliberNote），两处不能一个说一个不说
       const caliberNotes = caliberNotesOf(results);
-      // 时间跨度取 createdAt（规格 §4.3），按 timestamp 定最早/最新、同毫秒按 id 兜底：
-      // 兜底用的就是 audit.ts 那份全序比较器（`a.id < b.id` 与 localeCompare 对大小写与 `_` 的排序不同，
-      // 实测 56 对 id 里 20 对不一致），只在两帧同毫秒时可观察，但那决定了 span 与重置次数取哪一帧（评审 Task 7 finding 5）。
-      let earliest = frames[0];
-      let latest = frames[0];
-      for (const save of frames) {
-        if (byTimeThenId(save, earliest) < 0) earliest = save;
-        if (byTimeThenId(save, latest) > 0) latest = save;
-      }
-      const spanText = pkg.saves.length > 0
-        ? `${earliest.createdAt} → ${latest.createdAt}`
-        : '包内无历史帧（仅当前屏）';
+      // 时间跨度取 createdAt（规格 §4.3），按 timestamp 定最早/最新、同毫秒按 id 兜底。
+      // 这段定序复审 item 6c 起住在 audit.ts 的 packageSpan：组件里再写一遍 for 循环，就等于给
+      // 「同毫秒取哪一帧」留了第二份实现（`a.id < b.id` 与 localeCompare 对大小写与 `_` 的排序不同，
+      // 实测 56 对 id 里 20 对不一致），预览的跨度会与报告的重置次数各取一帧（评审 Task 7 finding 5）。
+      // 现在 latest 与 latestPackageFrame 是同一次扫描的同一个产物；空包那句措辞也由 packageSpan 给。
+      const spanText = packageSpan(pkg).text;
       // 重置次数是 **SaveFile** 的字段、不在 current 里，只能取最近那一帧的；没有历史帧就给「—」而不是 0。
       // 这条规则（同一个 latest、同一道 Number.isFinite 判据）现在住在 audit.ts，报告与预览共用（Task 8）。
       const resetCountText = packageResetCountText(pkg);
@@ -242,17 +217,29 @@ const SaveLoadPanel: React.FC = () => {
   // 让「同一份包再核对一次」时的本机状态与刚点开预览时不一致，核对动作应当不留痕。
   const handleExportReport = (ext: 'txt' | 'json') => {
     if (!pending) return;
-    const { json, text } = buildAuditReport(pending.pkg, pending.results, INTEGRITY_BOUNDARY, {
-      mismatch: pending.digestMismatch,
-      skipped: pending.digestSkipped,
-    });
     // 文件名与存档包同一条规则（年季 + 到分钟的时间戳），只把用途换成「核对报告」（§4.5 的「文件名」）
     const fileName = auditReportFileName(pending.pkg.app.year, pending.pkg.app.quarter, ext);
-    downloadFile(fileName, ext === 'json' ? json : text, ext === 'json' ? 'application/json' : 'text/plain');
+    try {
+      const { json, text } = buildAuditReport(pending.pkg, pending.results, INTEGRITY_BOUNDARY, {
+        mismatch: pending.digestMismatch,
+        skipped: pending.digestSkipped,
+      }, { reportFileName: fileName });
+      // 产物名也进正文（复审 item 7，规格 §4.5 的字段清单）：txt 被转发、截图或念出来时，
+      // 「报告生成时间」那一行得对得上一个名字，否则两份报告的正文互相认不出来
+      downloadFile(fileName, ext === 'json' ? json : text, ext === 'json' ? 'application/json' : 'text/plain');
+    } catch (error) {
+      // 复审 item 3：导出中途失败要说得出原因（规格 §6），与存档包导出同一层（上面 handleExport 的 try）。
+      // 此前这里裸奔：buildAuditReport 或 Blob/createObjectURL 一抛就只剩控制台里一行红字，
+      // 面板上「点了没反应」，用户无从知道是没算出来还是没下载成。
+      // 原因用 error.message（Task 5 定的规矩：name 是英文类名，会把中文说明整个吞掉）
+      console.error('Failed to export audit report:', error);
+      setValidationError(`报告导出失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
   };
 
   // 加载存档
-  const handleLoadSave = (saveFile: SaveFile) => {    loadGame(saveFile);
+  const handleLoadSave = (saveFile: SaveFile) => {
+    loadGame(saveFile);
     setIsOpen(false);
   };
 

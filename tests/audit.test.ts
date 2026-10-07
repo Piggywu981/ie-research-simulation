@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
-import { auditFrame, auditFrames, auditSummary, buildAuditReport, CALIBER_TEXT, CAUSE_TEXT, firstDivergingFrame, INTEGRITY_BOUNDARY, INTEGRITY_CAVEATS, type FrameAudit } from '../src/utils/audit';
+import { auditFrame, auditFrames, auditSummary, buildAuditReport, CALIBER_TEXT, CAUSE_TEXT, firstDivergingFrame, INTEGRITY_BOUNDARY, INTEGRITY_CAVEATS, packageSpan, type FrameAudit } from '../src/utils/audit';
 import { rebuildRestatedChain } from '../src/utils/restatement';
 import { SAVE_FORMAT_VERSION, type FinancialLogRecord, type SaveFile, type SavePackage } from '../src/types/enterprise';
 
@@ -730,6 +730,81 @@ describe('核对报告：首行、逐帧结论与指纹转录', () => {
     expect(of([saveOf('d', 1, '2')])).toContain('重置次数：—');
   });
 
+  it('包指纹行标明那是**声明值**：导入侧只重算逐帧指纹，整包指纹从未重算（复审 item 1）', () => {
+    const { text, json } = buildAuditReport(pkgOf([]), [mk({})], INTEGRITY_BOUNDARY, noNotes);
+    // 「指纹不符：无」旁边若赤条条一行「包指纹：sha256:…」，读的人就以为整包被本机核过
+    //（Task 8 设计问题 1 禁止的那种假保证）。这一行必须自己把范围说出来。
+    expect(text).toContain('包指纹：sha256:deadbeef00001111（包内声明值；导入侧只重算逐帧指纹，整包指纹未重算）');
+    const parsed = JSON.parse(json);
+    expect(parsed.packageDigest).toBe('sha256:deadbeef00001111');   // 键留着：脚本已在读它
+    expect(parsed.packageDigestScope).toBe('declared-not-reverified');
+  });
+
+  it('包指纹声明是 unavailable:* 时印「哈希未计算…」，绝不把内部 token 印给老师（复审 item 2）', () => {
+    const withPackage = (value: string): SavePackage => ({
+      ...pkgOf([], {}), digests: { package: value, frames: {} },
+    });
+    const lineOf = (value: string): string =>
+      buildAuditReport(withPackage(value), [mk({})], INTEGRITY_BOUNDARY, noNotes)
+        .text.split('\n').filter((l) => l.indexOf('包指纹：') === 0)[0];
+
+    // 措辞与面板 digestSkipNote 同一份（audit.ts 的 digestUnavailableNote，规格 §4.4）
+    expect(lineOf('unavailable:insecure-context'))
+      .toBe('包指纹：哈希未计算（非 HTTPS 环境）——包内声明值；导入侧只重算逐帧指纹，整包指纹未重算');
+    expect(lineOf('unavailable:bad-digest')).toContain('哈希未计算（bad-digest）');
+    expect(lineOf('')).toContain('哈希未计算（包内无记录）');
+    // 整份文本报告都不该出现内部 token（JSON 那一份是给脚本的，声明原样保留）
+    ['unavailable:insecure-context', 'unavailable:whatever'].forEach((v) => {
+      expect(buildAuditReport(withPackage(v), [mk({})], INTEGRITY_BOUNDARY, noNotes).text).not.toContain('unavailable:');
+    });
+  });
+
+  it('最近一帧的重置次数真是 0 时印 0（0 是合法读数，不是缺数据；复审 item 6a）', () => {
+    // 把 resetCount 为 0 的那一帧放到**最近**（timestamp 更大），旧帧给个非 0 值免得巧合
+    const older = saveOf('old', 1, 5);
+    const newestZero = saveOf('new', 9, 0);
+    const { text, json } = buildAuditReport(pkgOf([older, newestZero]), [mk({})], INTEGRITY_BOUNDARY, noNotes);
+    expect(text).toContain('重置次数：0');
+    expect(text).not.toContain('重置次数：—');
+    expect(JSON.parse(json).resetCount).toBe(0);        // 走 packageResetCount 那一条判据
+  });
+
+  it('钉住计划里那两行散文：指纹口径与逐帧指纹条数（复审 item 6b）', () => {
+    const frames = { s1: 'sha256:0123456789abcdef', s2: 'unavailable:insecure-context' };
+    const { text } = buildAuditReport(pkgOf([], frames), [mk({})], INTEGRITY_BOUNDARY, noNotes);
+    expect(text).toContain('逐帧指纹：包内声明 2 条');
+    expect(text).toContain('指纹口径：包指纹覆盖整包字节（digests 自身除外；含存档名/企业名/createdAt）；'
+      + '逐帧指纹只覆盖 {id,timestamp,version,resetCount,state}，仅改名会动包指纹而不动逐帧指纹。');
+  });
+
+  it('packageSpan：同毫秒的兜底必须是 localeCompare，退回 a.id < b.id 会取到相反的两端（复审 item 6c）', () => {
+    const lower = { ...saveOf('a', 9, 1), createdAt: 'T-A' };
+    const upper = { ...saveOf('B', 9, 2), createdAt: 'T-B' };
+    // 'a'.localeCompare('B') === -1，但 'a' < 'B' 为 false（码元序里大写在前）
+    expect('a'.localeCompare('B')).toBeLessThan(0);
+    expect('a' < 'B').toBe(false);
+
+    const span = packageSpan(pkgOf([upper, lower]));    // 故意反着给，取极值的实现不许依赖入参顺序
+    expect(span.earliest).not.toBeNull();
+    expect(span.earliest!.id).toBe('a');
+    expect(span.latest!.id).toBe('B');
+    expect(span.text).toBe('T-A → T-B');
+    // 空包：latest 给 null（重置次数因此不可能凭空印 0），文案给面板那句
+    expect(packageSpan(pkgOf([])).latest).toBeNull();
+    expect(packageSpan(pkgOf([])).text).toBe('包内无历史帧（仅当前屏）');
+  });
+
+  it('文本报告含「文件名：…」，JSON 同字段；不传则不印空话（复审 item 7，规格 §4.5）', () => {
+    const fileName = '企业1核对报告-第2年第3季-202610041949.txt';
+    const { text, json } = buildAuditReport(pkgOf([]), [mk({})], INTEGRITY_BOUNDARY, noNotes, { reportFileName: fileName });
+    expect(text).toContain(`文件名：${fileName}`);
+    expect(JSON.parse(json).reportFileName).toBe(fileName);
+
+    const bare = buildAuditReport(pkgOf([]), [mk({})], INTEGRITY_BOUNDARY, noNotes);
+    expect(bare.text).not.toContain('文件名：');
+    expect(JSON.parse(bare.json).reportFileName).toBeNull();
+  });
+
   it('JSON 给得出脚本要的全部字段，不必回头解析散文', () => {
     const bad = mk({ saveId: 's2', saveName: '帧s2', year: 2, quarter: 1, status: 'mismatch',
                      cause: 'restated-log', flowRebuilt: 20, restatedRebuilt: 5, actualCash: 20 });
@@ -738,7 +813,7 @@ describe('核对报告：首行、逐帧结论与指纹转录', () => {
     const parsed = JSON.parse(json);
     expect(Object.keys(parsed).sort()).toEqual([
       'boundary', 'caveats', 'digestMismatch', 'digestSkipped', 'diverging', 'exportedAt', 'frameDigests',
-      'frames', 'generatedAt', 'packageDigest', 'resetCount', 'summary',
+      'frames', 'generatedAt', 'packageDigest', 'packageDigestScope', 'reportFileName', 'resetCount', 'summary',
     ]);
     expect(parsed.frames).toHaveLength(2);
     expect(parsed.summary).toEqual({ total: 2, ok: 1, mismatch: 1, noAnchor: 0, legacyMismatch: 0 });
