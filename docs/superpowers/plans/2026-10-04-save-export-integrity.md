@@ -55,7 +55,7 @@
 - Consumes: 无（本任务是地基）
 - Produces: `LogKind`、`FinancialLogRecord.kind: 'flow' | 'summary'`、`migrateState` 对 `kind` 的兜底、存档 `version = 4`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新建 `tests/cashTrail.test.ts`：
 
@@ -110,12 +110,12 @@ describe('现金流水账不变量', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/cashTrail.test.ts`
 Expected: FAIL —— `l.kind` 为 `undefined`，`flowSum` 得 0，第一例报 `expected 0 to be 20`。
 
-- [ ] **Step 3: 加类型**
+- [x] **Step 3: 加类型**
 
 `src/types/enterprise.ts` 在 `FinancialLogRecord` 之前加：
 
@@ -139,7 +139,7 @@ export const SAVE_FORMAT_VERSION = 4;
   version: number; // 存档格式版本：3=厂房权属/租赁快照，4=财务日志 flow/summary 分类
 ```
 
-- [ ] **Step 4: 让编译器替你找齐 39 个产生点**
+- [x] **Step 4: 让编译器替你找齐 39 个产生点**
 
 Run: `npx tsc --noEmit`
 Expected: 一连串 `Property 'kind' is missing` 报错，逐个定位到 `enterpriseStore.ts` 的日志产生点与测试里的日志字面量。
@@ -151,11 +151,11 @@ Expected: 一连串 `Property 'kind' is missing` 报错，逐个定位到 `enter
 
 测试文件同理：`tests/controlTable.test.ts` 的 `mkLog` 默认 `kind: 'flow'`，并把 `kind` 设为可覆盖参数；`tests/factory.test.ts` 若有手写日志字面量同样补字段。
 
-- [ ] **Step 5: 删除死 API**
+- [x] **Step 5: 删除死 API**
 
 `addFinancialLog`（约 `:452-474`，带约 `:289` 的类型声明）全仓零调用点（`grep -rn "addFinancialLog" src/` 只命中其定义与声明），整块删除，不为它加 `kind`。
 
-- [ ] **Step 6: 修三处 newCash 逃逸回填**
+- [x] **Step 6: 修三处 newCash 逃逸回填**
 
 现状：9 个站点写 `newCash: 0`，仅 `yearEndLogs` 的 6 个被回填块修复；`installPaymentLogs`、`startProductionLogs`、以及**在回填之后才 push** 的市场放弃警告三处逃逸。把回填改成按季内真实时序累计，并把警告前移：
 
@@ -177,7 +177,7 @@ Expected: 一连串 `Property 'kind' is missing` 报错，逐个定位到 `enter
 
 同时把市场放弃警告（`// 年末市场/ISO 年度结算` 下的 `yearEndLogs.push`）挪到上述回填**之前**完成构造与 push，使它与其它 `e-5` 日志一样被回填。删除原先只覆盖 `yearEndLogs` 的旧回填循环。
 
-- [ ] **Step 7: 迁移与版本**
+- [x] **Step 7: 迁移与版本**
 
 `migrateState` 内、生产线迁移之后插入旧档兜底（新代码一律显式写 `kind`，不依赖它）：
 
@@ -199,12 +199,12 @@ Expected: 一连串 `Property 'kind' is missing` 报错，逐个定位到 `enter
 
 顺手修正一处注释谎报：`allLogs.splice(6, 0, rdLog)` 上方注释写"插入到开工日志之后"，实际落在 `materialArrivalLog` 之后、开工日志之前，改成对现状的准确描述。
 
-- [ ] **Step 8: 跑测试确认通过**
+- [x] **Step 8: 跑测试确认通过**
 
 Run: `npx vitest run`
 Expected: 全绿（含 3 例新用例）。若 `tests/controlTable.test.ts` / `tests/factory.test.ts` 因日志字面量缺 `kind` 失败，按 Step 4 的规则补齐——**不得**通过把 `kind` 改成可选字段来"修好"。
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 git add src/types/enterprise.ts src/store/enterpriseStore.ts tests/cashTrail.test.ts tests/controlTable.test.ts tests/factory.test.ts
@@ -224,7 +224,7 @@ git commit -m "feat(store): 财务日志增 flow/summary 分类，修复三处 n
 - Consumes: Task 1 的 `FinancialLogRecord.kind`
 - Produces: 「所有现金合计只加 `flow`」这一约束在两处消费方成立；后续审计任务沿用同一判据
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/controlTable.test.ts` 追加（沿用该文件既有 `mkLog`/`rows` 助手）：
 
@@ -247,12 +247,12 @@ git commit -m "feat(store): 财务日志增 flow/summary 分类，修复三处 n
   });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/controlTable.test.ts`
 Expected: FAIL —— `入库…` 单元格为 `9M`（5+4），证明 summary 被重复计入。
 
-- [ ] **Step 3: 改导出器**
+- [x] **Step 3: 改导出器**
 
 `q-18` 与 `q-19` 的过滤链各加一环，判据写在注释里：
 
@@ -269,18 +269,18 @@ Expected: FAIL —— `入库…` 单元格为 `9M`（5+4），证明 summary �
             .reduce((s, l) => s - l.cashChange, 0);
 ```
 
-- [ ] **Step 4: 改页面合计并删死代码**
+- [x] **Step 4: 改页面合计并删死代码**
 
 `calculateQuarterTotal` 的过滤同样加 `log.kind === 'flow'`；并删除那段永不命中的文本排除（`description.includes('季初现金盘点')` 等，约 `:402-415`）——`q-1` 的真实描述是 `(...)` 括号串，这个分支从来没起过作用，留着会误导后人。改为注释说明排除依据是 `kind`。
 
 **同一文件的第二处死匹配（评审 S-T1 发现，本任务一并处理）**：`OperationCenter.tsx:203-205` 也有一处按 `季初现金盘点` 文本匹配的死分支。它今天 fall back 到 `cashFlowHistory` 的正确数字；**不要**为了"统一"而把它改成读 `q-1` 日志的 `newCash`——那个值是 `initialCash + cashIncrease`，不扣短贷本息与应付归还，会显示错数。正确做法是删掉死匹配、保留 `cashFlowHistory` 来源，并在注释里写明原因。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `npx vitest run`
 Expected: 全绿。若既有断言原本就期望 summary 被计入（说明它编码了缺陷），按新规则更正该期望并在提交信息里说明——本任务允许改这种断言，但**不得**改金额断言的数值来迁就实现。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add src/utils/controlTable.ts src/components/OperationCenter.tsx tests/controlTable.test.ts
@@ -302,7 +302,7 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 
 **为什么要多改这一处 store**（规格 §4.4 第四次更正）：原 `quarterEndLog.cashChange = finalCashChange` 只累加引擎自动项，不含玩家该季主动交易。实测一次带 180M 注资的 5 季存档：A 侧 202 = 现金 202 ✓，B 侧仅 22 ✗。B 式重建要成立，重述串必须先变成"整季全部净变动"。原计划以为"该字段没有别的消费方"，评审 I3 证伪——改口径前仍有两处读 `summary.cashChange`：`src/app/page.tsx` 的最近流水列表与 `src/components/OperationCenter.tsx` 的已完成步骤判定，两处均已按 `kind` 过滤/排除（现为 `src/app/page.tsx:335`、`src/components/OperationCenter.tsx:702`）后才允许口径变更落地。
 
-- [ ] **Step 0: 写重述串口径的失败测试**
+- [x] **Step 0: 写重述串口径的失败测试**
 
 追加到 `tests/cashTrail.test.ts`：
 
@@ -321,7 +321,7 @@ git commit -m "fix(controlTable): 现金合计只取 flow 日志，页面季度�
 Run: `npx vitest run tests/cashTrail.test.ts`
 Expected: FAIL —— 实得 `0`（引擎自动项本季净额）而期望 `180`，证明旧口径漏计玩家操作。
 
-- [ ] **Step 0b: 改口径**
+- [x] **Step 0b: 改口径**
 
 `quarterEndLog` 构造处（`enterpriseStore.ts:2743-2753` 一带）把 `cashChange: finalCashChange` 改为"期末现金 − 上一条重述串的期末现金"，并在同一处注释写明理由：
 
@@ -338,7 +338,7 @@ Expected: FAIL —— 实得 `0`（引擎自动项本季净额）而期望 `180`
 Run: `npx vitest run`
 Expected: 全绿（含 Step 0 新例）。若控制表或页面某格因此改动而变（`getQuarterEndCash` 读的是 `newCash`，不受影响），报告说明，不得回改口径。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新建 `tests/audit.test.ts`：
 
@@ -433,12 +433,12 @@ describe('包内定位', () => {
 
 > 上例用真引擎跑，因此会与本文件其它用例共享 store：`beforeEach` 已负责复位，不要再在例内手动 `setState` 初始帧。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/audit.test.ts`
 Expected: FAIL —— `Cannot find module '../src/utils/audit'`。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 新建 `src/utils/audit.ts`。**帧内不做季度级猜测定位**（规格 §4.4 已两次更正：按 `(year,quarter)` 分桶会因年末日志被 remap 到 `(收尾年,4)`、重述串落在 `(新年,新季)` 而错位；按数组顺序累计也不行，因为 `quarterEndLog` 在 `allLogs` 里排在年末结算日志**之前**，每条标记都会假不等）。改为两条独立重建 + 包内定位：
 
@@ -532,14 +532,14 @@ export const CAUSE_TEXT: Record<AuditCause, string> = {
 };
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run tests/audit.test.ts`
 Expected: 7 例全过（本任务自己的 describe 5 例 + 包内定位 2 例）。三处需要重点核对：① "真跑 5 季未篡改"一例必须是 `ok`——若它是 `mismatch`，说明 S-T1 的 `kind` 分类或回填有漏，回到 S-T1 修，**不得**在此放过；② 篡改一季流水那例必须 `cause === 'flow-log'`（重述线仍吻合），若报成 `both` 说明 B 侧重建算错了种子；③ 只改 summary 那例必须 `cause === 'restated-log'`。
 
 若报 `EnterpriseState` 未使用（TS 严格模式下的无用导入），删掉该导入即可，不要保留空导入。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/utils/audit.ts tests/audit.test.ts
@@ -558,7 +558,7 @@ git commit -m "feat(audit): 账实重演算纯函数，手改现金或流水可�
 - Consumes: `SaveFile`、`EnterpriseState`
 - Produces: `canonicalStringify(value: unknown): string`、`digestText(text: string): Promise<string>`（返回 `sha256:<hex16>` 或 `unavailable:<原因>`）、`digestFrame(save: SaveFile): Promise<string>`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -595,12 +595,12 @@ describe('哈希指纹', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/saveDigest.test.ts`
 Expected: FAIL —— 模块不存在。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```ts
 // 规范化与哈希（规格 §4.4）：哈希只是指纹，不是防作弊结论
@@ -631,12 +631,12 @@ export const digestFrame = (save: SaveFile): Promise<string> =>
   digestText(canonicalStringify({ id: save.id, timestamp: save.timestamp, version: save.version, resetCount: save.resetCount, state: save.state }));
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run tests/saveDigest.test.ts`
 Expected: 全过。**落地实况（Task 4 已按此实现，后续任务照此消费）**：本仓库 Node 环境**有** `crypto.subtle`，所以 `sha256:` 分支是真实执行的那条，降级分支必须用 `vi.stubGlobal` 造出来才覆盖得到——计划原写的"若无 subtle 则自然走 unavailable"是反的。展开写法用 `Array.from(new Uint8Array(buf))`，`[...new Uint8Array(buf)]` 在本仓库 `target: "es5"` 下直接 TS2802（`tsc --noEmit` 会红）。规范化侧额外定死了四类奇异输入（`undefined`/函数/symbol/bigint → `null`；`Date` 走 `toJSON` 的 ISO 串，与写进包里的字节一致；循环引用沿祖先路径折成 `null`；`NaN`/`Infinity` → `null`，于是 `{cash:NaN}` 与 `{cash:null}` 同指纹——已知取舍，非有限读数的严重性由审计侧按「null 而非 NaN」另行处理），键名一律过 `JSON.stringify` 转义（不转义会让 `{ 'a:1,b': 2 }` 与 `{ a: 1, b: 2 }` 同串，且拼出的串不再是合法 JSON）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/utils/saveDigest.ts tests/saveDigest.test.ts
@@ -657,7 +657,7 @@ git commit -m "feat(save): 规范化序列化与 SHA-256 指纹，非安全上�
 - Consumes: Task 3 的 `digestFrame` 所属模块、Task 4 的 `canonicalStringify`/`digestText`、store 的 `get()` 与 `getSaveFiles()`
 - Produces: `SavePackage` 类型；`buildSavePackage(state: EnterpriseState, saves: SaveFile[]): Promise<SavePackage>`；`serializePackage(pkg: SavePackage): string`；`packageFileName(year: number, quarter: number, at?: Date): string`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -685,12 +685,12 @@ describe('存档包', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/savePackage.test.ts`
 Expected: FAIL —— 模块不存在。
 
-- [ ] **Step 3: 类型**
+- [x] **Step 3: 类型**
 
 `src/types/enterprise.ts` 末尾追加（**落地实况**：接在 `SaveFile` 之后而不是文件末尾——`SavePackage` 的两个字段直接是 `EnterpriseState` 与 `SaveFile[]`，读它的人该能在同一屏里看到它们的定义）：
 
@@ -707,7 +707,7 @@ export interface SavePackage {
 }
 ```
 
-- [ ] **Step 4: 实现**
+- [x] **Step 4: 实现**
 
 ```ts
 import type { EnterpriseState, SaveFile, SavePackage } from '../types/enterprise';
@@ -749,7 +749,7 @@ export const serializePackage = (pkg: SavePackage): string => JSON.stringify(pkg
 5. 下载片段照 `OperationCenter.tsx:625-633` 的既有写法补齐 `document.body.appendChild(a)` → `click()` → `removeChild(a)`（片段少了前后两行）：本仓库两处既有导出都是"先挂进 DOM 再点"，跨浏览器兼容性正是这个写法的由来，且必须复用同一套而不是另起第二个 helper。按钮位置是「手动存档 / **导出存档包** / 重置游戏」——破坏性的重置仍留最右。
 6. 指纹值**任何用例都不钉死**：非安全上下文下 `digestFrame`/`digestText` 给的是 `unavailable:*`（S-T4 的降级），只钉形状 `/^(sha256:[0-9a-f]{16}|unavailable:.+)$/` 与三条一致性——`digests.frames[id] === await digestFrame(pkg.saves[i])`、经 `JSON.parse(serializePackage(pkg))` 往返后重算仍等于声明值、`digests` 从字节里去掉后重算整包指纹等于声明值。逐帧指纹另有一例"只改五个内容字段之一，指纹必须变；只改展示字段必须不变"——片段那种"五帧之间互不相同"的写法抓不到它（`id` 本身在指纹里，任两帧天然不同）。
 
-- [ ] **Step 5: 导出按钮**
+- [x] **Step 5: 导出按钮**
 
 `SaveLoadPanel.tsx` 在「手动存档 / 重置游戏」那一行（约 `:76-89`）之后加第三个按钮，处理器新增本地态 `exporting`：
 
@@ -778,12 +778,12 @@ export const serializePackage = (pkg: SavePackage): string => JSON.stringify(pkg
 
 按钮 `disabled={exporting}`、文案 `{exporting ? '导出中…' : '导出存档包'}`，并加 `title="下载含全部历史快照与指纹的 JSON 文件，可在其它浏览器导入"`。导出是只读动作，**不加 `isPaused` 拦截**（规格 §7.10）。从 store 多解构 `addOperationLog` 与 `setValidationError`。
 
-- [ ] **Step 6: 跑测试 + 类型 + 构建**
+- [x] **Step 6: 跑测试 + 类型 + 构建**
 
 Run: `npx vitest run && npx tsc --noEmit && npm run build`
 Expected: 全绿；构建仅 3 条既有基线警告。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/types/enterprise.ts src/utils/savePackage.ts src/components/SaveLoadPanel.tsx tests/savePackage.test.ts
@@ -802,7 +802,7 @@ git commit -m "feat(save): 存档包结构与构建导出，含逐帧与整包�
 - Consumes: `SavePackage`、`SaveFile`
 - Produces: `type PackageParseResult = { ok: true; pkg: SavePackage } | { ok: false; reason: string }`、`parseSavePackage(text: string): Promise<PackageParseResult>`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { parseSavePackage } from '../src/utils/savePackage';
@@ -855,12 +855,12 @@ describe('存档包解析', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/savePackage.test.ts`
 Expected: FAIL —— `parseSavePackage` 未导出。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 追加到 `src/utils/savePackage.ts`。校验只做"能不能安全地当成状态用"，不做业务判断：
 
@@ -1024,12 +1024,12 @@ Step 1 的测试里再补一条（放在「saves 非数组被拒绝」之后）�
 12. **`migrateState` 仍是模块私有**（`enterpriseStore.ts:219`），预检 #5 里"不可见就加 export"的决定留给 S-T7：本任务用等价断言（对放行的包逐个断言 `:223/:233/:251/:260/:288-295/:298-300` 解引用的那些处真实存在）替代调用它，另加一条"解析出来的包能原样喂给 `auditFrames` 与 `buildSavePackage`"。
 13. **"下游不抛"的口径在复审后扩到渲染链**（控制者实测补的缺口，不是实现者的错——简报当时的措辞就只列了审计/指纹/迁移）：一张对抗表（42 种畸形输入，逐个跑 `auditFrames`/`auditFrame`/`digestFrame`/`buildSavePackage`/`loadGame`）跑出 `CRASHES=0`，其余全部点名拒绝，仅 11 例被放行——其中 `logistics.rawMaterials = [null]`、`finishedProducts[0]` 缺 `quantity`、`rawMaterialOrders`/`availableOrders`/`selectedOrders`/`advertisements`/`operationLogs`/`cashFlowHistory` 里的非对象条目——导入后**第一屏**就会抛（`controlTable.ts:105-106` 逐行拼 `${quantity}${type}`、`LogisticsCenter.tsx:59/65` reduce 累加、`OperationCenter.tsx:370` 在推进季度时 filter 订单字段、`MarketingCenter.tsx:338/457/511` 逐行渲染）。已把这七张表纳入 `stateShapeProblem`（库存两类另要求 `quantity` 是有限数字），`current` 与每一帧共用同一份判据。仍**故意放行**的：`annualLedger` 缺失或为数字（`:298` 无条件补 `emptyLedger()`，数字上读属性得 undefined 而不抛）、产线条目缺 `netValue`/`builtInYear`（迁移补）、流水行缺 `description`（审计据此诚实报 `no-anchor`，不是错判）、`cashFlowHistory` 行的 `cash` 类型（只印数、不抛）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run tests/savePackage.test.ts`
 Expected: 全过。"超 8MB"一例保持真实 9MB 字符串（实测整文件 0.8s 内跑完，不必改成合成断言），但**必须**另有一条按 UTF-8 字节算的中文载荷用例（见实况 #1）——只有 9MB ASCII 那一例时，把测量退回 `text.length` 是不会死的。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/utils/savePackage.ts tests/savePackage.test.ts
@@ -1049,7 +1049,7 @@ git commit -m "feat(save): 存档包解析与结构校验，畸形输入点名�
 - Consumes: Task 3 `auditFrames`/`auditSummary`（含 `legacyMismatch`）/`CAUSE_TEXT`/`CALIBER_TEXT`/`FrameAudit.restatementCaliber`、Task 4 `digestFrame`、Task 5 `SavePackage`、Task 6 `parseSavePackage`
 - Produces: store 上 `importSaveFiles(saves: SaveFile[]): { added: number; renamed: number }`、`applyImportedState(state: EnterpriseState, fromVersion: number, resetCount?: number): void`（落地实况：第三个参数是 S-T7 复审 finding 4 补的——预览印的"重置次数"取包内最近一帧，`loadGame` 也会恢复它，所以「设为当前进度」必须落同一个数，否则同一份进度两个说法；不传或传非有限值则本机计数不动）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新建 `tests/saveImport.test.ts`：
 
@@ -1102,12 +1102,12 @@ describe('导入落库语义（默认不覆盖）', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/saveImport.test.ts`
 Expected: FAIL —— `store().importSaveFiles is not a function`。
 
-- [ ] **Step 3: store actions**
+- [x] **Step 3: store actions**
 
 类型声明区加：
 
@@ -1160,7 +1160,7 @@ Expected: FAIL —— `store().importSaveFiles is not a function`。
 
 它的签名是 Task 3 第二轮评审定下的 `migrateState(state, fromVersion)`（`fromVersion: number | undefined`）——旧档的**重述串口径换算**必须知道原存档版本才能决定要不要重建（见 `src/utils/restatement.ts`），所以本任务不能像原计划那样只传 state：`importSaveFiles` 从每帧自带的 `save.version` 取，`applyImportedState` 由调用方把 `pkg.app.saveVersion` 传进来。签名以 store 里的实际定义为准，不要改回去。
 
-- [ ] **Step 4: UI 编排**
+- [x] **Step 4: UI 编排**
 
 `CALIBER_TEXT` 由 Task 3 与 `CAUSE_TEXT` 并列提供（见本任务 Interfaces 的 Produces），本任务**直接 import、不再新建**：
 
@@ -1290,12 +1290,12 @@ S-T7 复审后补的四处实况（`7153415` 之后，均在 `src/components/Sav
 
 文件入口用 `<input type="file" accept="application/json" className="hidden" onChange={e => handleFilePicked(e.target.files?.[0])} />` + 一个「导入存档包」按钮触发 `click()`；该入口只读，暂停时可用。
 
-- [ ] **Step 5: 跑测试 + 类型 + 构建**
+- [x] **Step 5: 跑测试 + 类型 + 构建**
 
 Run: `npx vitest run && npx tsc --noEmit && npm run build`
 Expected: 全绿。
 
-- [ ] **Step 6: 手工冒烟（逐条记录实际所见，不接受推断）**
+- [x] **Step 6: 手工冒烟（逐条记录实际所见，不接受推断）**
 
 1. 导出一份存档包 → 同一浏览器删掉 localStorage 后用该文件导入 → 列表恢复、进度可用。
 2. 连导两次同一文件 → 第二次出现 `s1-imported-1`，第一次的内容逐字不变。
@@ -1304,7 +1304,7 @@ Expected: 全绿。
 5. 暂停态下导出与预览可用，两个写动作按钮禁用且有可见说明。
 6. 截图存入 `.superpowers/` 或临时目录并在报告里给路径；若无法截图，明确标注 NOT VERIFIED。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/store/enterpriseStore.ts src/components/SaveLoadPanel.tsx tests/saveImport.test.ts
@@ -1326,7 +1326,7 @@ git commit -m "feat(save): 存档包导入预览与非覆盖落库，暂停态�
 - Consumes: `FrameAudit`、`CAUSE_TEXT`、`CALIBER_TEXT`、`firstDivergingFrame`、`auditSummary`（含 `legacyMismatch`）、`SavePackage`、既有 Blob 下载写法
 - Produces: `buildAuditReport(pkg: SavePackage, results: FrameAudit[], boundaryLine: string): { json: string; text: string }`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { buildAuditReport } from '../src/utils/audit';
@@ -1347,12 +1347,12 @@ import { buildAuditReport } from '../src/utils/audit';
   });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/audit.test.ts`
 Expected: FAIL —— `buildAuditReport` 未导出。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 > **2026-10-04 落地校正（Task 8 实现期，四处）**
 > 1. **签名多一个必填参数**：`digestFrame` / `digestText` 是异步的，而「指纹不符 / 未计算」这两个**判定**是 Task 7 的 `handleFilePicked` 当场算出来的。同步的报告若自己去算，就成了同一件事的第二套实现；若只转录包内**声明**却不说明是谁算的，老师会把"这台机器算不出"读成"已核实"。故第四个参数把面板已算好的两张表传进来：
@@ -1429,16 +1429,16 @@ export function buildAuditReport(
 放 `src/utils/audit.ts`（与 `FrameAudit` 同域），在文件顶部补 `import type { SavePackage } from '../types/enterprise';` 与 `import { money, readNumber } from './format';`。
 `diverging` 进 JSON 的是**帧对象本身**（saveId/status/cause/restatementCaliber 都在内），脚本不必用正则啃中文行；包内无历史帧时 `resetCount` 是 `null` 而不是 0。
 
-- [ ] **Step 4: 面板接线**
+- [x] **Step 4: 面板接线**
 
 预览面板加「导出核对报告（txt）」与「导出核对报告（json）」两个按钮，各产一件、共用同一数据源（`pending.results` + `pending.digestMismatch/digestSkipped`）；两者都走既有 Blob 写法（抽成 `downloadFile()`，与存档包导出共用；`.txt` 与 `.json` 都不加 BOM，只有 CSV 加）。按钮为只读动作，不受暂停影响（§7 第 10 条），也不写操作日志——核对要能反复点而不改变本机状态。文件名走 `savePackage.ts` 新增的 `auditReportFileName(year, quarter, ext)`，与 `packageFileName` 共用同一条「年季 + 到分钟时间戳」规则与企业名前缀。
 
-- [ ] **Step 5: 跑测试 + 构建**
+- [x] **Step 5: 跑测试 + 构建**
 
 Run: `npx vitest run && npm run build`
 Expected: 全绿。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add src/utils/audit.ts src/components/SaveLoadPanel.tsx tests/audit.test.ts
@@ -1458,7 +1458,7 @@ git commit -m "feat(save): 核对报告导出（txt/json），与面板共用同
 - Consumes: 已实现的全部行为（文案不得描述未实现的能力）
 - Produces: 三处一致的能力边界句式
 
-- [ ] **Step 1: 规则弹窗**
+- [x] **Step 1: 规则弹窗**
 
 在 `RULE_SECTIONS` 里新增一节（放在「融资与资金管理」之后）：
 
@@ -1487,18 +1487,18 @@ git commit -m "feat(save): 核对报告导出（txt/json），与面板共用同
 
 > **2026-10-05 复审修正（item 4）**：这块落地时曾在 `INTEGRITY_BOUNDARY` 与 `...INTEGRITY_CAVEATS` 之间垫一句「以下两条余地是实测得出的……其中提到的「帧统计」见核对报告的帧统计行。」——那是为解释 `INTEGRITY_CAVEATS[0]` 句尾「条数见下方帧统计里的…」这个**报告版面**相对的方向词而写的补丁，README 里也有一条同族补丁。两句都已删除：常量本身改成上下文无关的说法（见 Task 8 修正第 8 条），"这句话只有一份"才真的成立。`tests/integrityCopy.test.ts` 随之钉住「余地里不许出现 下方/如上 之类的方向词」「弹窗与 README 不得再出现解释性补丁句」。
 
-- [ ] **Step 2: README**
+- [x] **Step 2: README**
 
 - 核心功能节补一行：`- **存档流转**：存档包导出/导入（默认不覆盖、先预览）、账实重演算核对、核对报告导出`
 - 使用说明节把原先那句"跨设备请使用系统内导出的存档/CSV 文件"改为具体路径：`存档管理 → 导出存档包`，并写明 JSON 不带 BOM、可用 `parseSavePackage` 同规则的脚本读取。
 - 新增一小节「完整性校验的能力边界」，逐字用 Step 1 第 5 条那句。
 - 测试用例数按实测更新（在**工作树内**跑 `npx vitest run` 取真实数字并注明命令）。
 
-- [ ] **Step 3: roadmap 校正（它现在含一条被实测推翻的判断）**
+- [x] **Step 3: roadmap 校正（它现在含一条被实测推翻的判断）**
 
 `docs/roadmap.md` §3 P0 中的 IndexedDB 建议改为实测结论：单帧 4.1–34.3KB、16 份存档合计 0.54MB，配额无压力，故该条作废；同时把 §5.7 的 `loadGame` 版本雷标记为"已在 v4 处理为 `>= 4`"。
 
-- [ ] **Step 4: 校验文案与代码一致**
+- [x] **Step 4: 校验文案与代码一致**
 
 逐条比对 Step 1 的四行与实际行为：改名后缀字符串（`-imported-1`）、非安全上下文的措辞（`unavailable:insecure-context` 对应的用户可见文字）、重演算报错句式（与 `SaveLoadPanel` 里的 `账实不符…流水推算…快照…` 一致）。
 
@@ -1507,7 +1507,7 @@ git commit -m "feat(save): 核对报告导出（txt/json），与面板共用同
 Run: `npx vitest run && npm run build`
 Expected: 全绿。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/components/RulesModal.tsx README.md docs/roadmap.md
