@@ -59,6 +59,8 @@
 
 新建 `tests/cashTrail.test.ts`：
 
+> **2026-10-05 更正（Task 9 文案校同时修）**：下面这块是 S-T1 时的**预测写法**，其中两处 `-36`（用例标题里的"共 -36M"与 `toBe(-36)`，以及"加回去会得 -26"那条注释）是**旧口径**下的数——那时 `summary` 只累加引擎自动项。S-T3 把口径改成"自上一条重述串以来的全部净变动"后，同一脚本实断言的是 **`Σ summary = 170`**（望远镜收敛到 期末 190 − 种子 20），全部日志合计 **360**（加回去会重复计 170）。落地版见 `tests/cashTrail.test.ts` 的「脚本化 8 个季度」与规格 §7.1 的同一处更正。其余各行与落地一致。
+
 ```ts
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useEnterpriseStore, createFreshState } from '../src/store/enterpriseStore';
@@ -94,7 +96,6 @@ describe('现金流水账不变量', () => {
     // 关键：把 summary 加回去会得 -26（Σflow 10 + Σsummary -36），与实际净变动 -10 不符（规格 §2）
     expect(flowSum(logs)).toBe(store().state.finance.cash);
   });
-
   it('每条 flow 日志的 newCash 都不为 0 占位', () => {
     store().registerOtherCashFlow('测试注资', 180);
     // 必须买一条带安装期的线（semi-automatic 安装 2 季），否则 installPaymentLogs 恒空、
@@ -1440,23 +1441,29 @@ git commit -m "feat(save): 核对报告导出（txt/json），与面板共用同
 
 在 `RULE_SECTIONS` 里新增一节（放在「融资与资金管理」之后）：
 
+> **2026-10-05 落地更正（Task 9）**：下面这块原写法把边界句**重打**了一遍、并自带一条"同一毫秒…"的措辞。两条都与已发布的常量不符：S-T8 已把这句与两条余地导出成 `INTEGRITY_BOUNDARY` / `INTEGRITY_CAVEATS`（`src/utils/audit.ts`，见本计划 Task 8 更正第 4 条），**常量为准**——弹窗必须 import 它们，否则"三处逐字一致"当场失效（`tests/integrityCopy.test.ts` 断的是**引用相等**，重打同字面量过不了）。落地形态：
+
 ```ts
   {
     title: '存档与完整性校验',
     highlight: true,
     items: [
-      '存档包：一个 JSON 文件，含当前进度与全部历史快照，可在另一台电脑/浏览器导入继续运营。',
-      '导入默认不覆盖：同 id 的存档会改名追加（形如 -imported-1），并先给预览再让你二选一。',
-      '账实重演算：用每帧自带的现金流水独立推算现金余额，手改余额或改流水都会报出所在季度。',
-      '包指纹：导出时对规范化 JSON 计算 SHA-256（非 HTTPS 环境下会明确标注"未计算"），仅作篡改指纹。',
-      '完整性校验用于发现误操作与随手改数，不构成防作弊保证；成绩判定以运行控制表与实践报告为准。',
-      // S-T6 实测得出、必须由这句留出余地（评审前请勿删）：重演算的"季末之后还有尾随流水"靠 Date.now()
-      // 的毫秒序区分，若同一毫秒内既推进了季度又完成了主动交易，那笔交易会既不在重述串里也不进尾项，
-      // 于是报出一条并不存在的"账实不符"。人工点按隔着秒不会触发，脚本式连点/自动化操作才可能。
-      '同一毫秒内既推进季度又做主动交易时，重演算可能误报一季不符（时间戳精度所限）；隔一秒以上的正常操作不受影响。',
+      '存档包：一个 JSON 文件（不带 BOM），含当前进度、全部历史快照与两者指纹；可在另一台电脑或另一浏览器导入继续运营。',
+      '导入默认不覆盖：与本机同 id 的历史帧不替换原有存档，而是追加新 id（形如 -imported-1）、列表名加注（导入1）；落库前先看预览，再由「仅加入存档列表」与「设为当前进度」二选一。',
+      '账实重演算：每帧用自带的现金流水（kind=flow）独立重推余额并与帧末现金比对，只依据该帧、不跨帧拼接；不符时报出是第几年第几季，并给出「流水重演算」与「帧末现金」两个读数。',
+      '缺期初现金种子的帧报「起算链不完整」，与「账实不符」是两种结论；后者分三类：'
+        + `${CAUSE_TEXT['flow-log']} / ${CAUSE_TEXT['restated-log']} / ${CAUSE_TEXT['both']}。`,
+      '包指纹：导出时对规范化 JSON 计算 SHA-256（另有逐帧指纹）。换设备或非 HTTPS 环境算不出摘要时，逐帧标注「哈希未计算（非 HTTPS 环境）」，绝不静默当成不一致。指纹只是篡改线索、不是锁：改完数据自己重算摘要的人防不住。',
+      '核对报告：预览当场算出的逐帧结论与指纹判定可导出为 txt / json 两种，首行就是下面这句能力边界声明；报告只转录本机算过的结果，不再重算一遍。',
+      '导出与核对（读文件、算预览）在运营暂停时仍可用；只有会改动本机存档的两个落库动作要先继续运营。',
+      INTEGRITY_BOUNDARY,
+      '以下两条余地是实测得出的，与核对报告首行之后那两条逐字相同（同一份常量，不重写）；其中提到的「帧统计」见核对报告的帧统计行。',
+      ...INTEGRITY_CAVEATS,
     ],
   },
 ```
+
+顶部随之 `import { CAUSE_TEXT, INTEGRITY_BOUNDARY, INTEGRITY_CAVEATS } from '../utils/audit';`，并把 `RULE_SECTIONS` 导出给测试（本仓库无 jsdom，测不了渲染就测**渲染要用的数据**）。原第 5 条与第 6 条分别由 `INTEGRITY_BOUNDARY` 与 `INTEGRITY_CAVEATS[1]` 承担；`INTEGRITY_CAVEATS[0]`（旧档"不符"≠篡改）是原计划漏的那一条，补上。
 
 - [ ] **Step 2: README**
 
@@ -1472,6 +1479,8 @@ git commit -m "feat(save): 核对报告导出（txt/json），与面板共用同
 - [ ] **Step 4: 校验文案与代码一致**
 
 逐条比对 Step 1 的四行与实际行为：改名后缀字符串（`-imported-1`）、非安全上下文的措辞（`unavailable:insecure-context` 对应的用户可见文字）、重演算报错句式（与 `SaveLoadPanel` 里的 `账实不符…流水推算…快照…` 一致）。
+
+> **2026-10-05 落地更正（Task 9）**：第三处的引文不准。落地印面里没有"流水推算…快照…"，实际是 `audit.ts` 的 `formatFrameAudit`：`{存档名}（第Y年第Q季）：账实不符（{CAUSE_TEXT}），流水重演算 {money} / 帧末现金 {money}；{CALIBER_TEXT}`，面板只在它前面加 `账实核对：` 前缀（`SaveLoadPanel.tsx` 的红字块），报告用同一份措辞（`buildAuditReport` 的 `frameLines`）。前两处成立：id 后缀 `${save.id}-imported-${n}`（`enterpriseStore.ts` 的 `importSaveFiles`，n 从 1 起）＋ 列表名 `（导入${n}）`；`unavailable:insecure-context` → 用户可见文字是 `哈希未计算（非 HTTPS 环境）`（`digestSkipNote`）。这些比对已固化成 `tests/integrityCopy.test.ts`。
 
 Run: `npx vitest run && npm run build`
 Expected: 全绿。
