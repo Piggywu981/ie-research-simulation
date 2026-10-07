@@ -36,7 +36,7 @@
 | P3/P4 类型字段仍残留，且存在绕过订单池的手工录入旁路 | `src/types/enterprise.ts:83,129,153,213`；`addAvailableOrder` 在 `src/` 有 4 处引用 |
 | 已知缺陷与取舍已记录在规格，不在别处 | `docs/superpowers/specs/2026-10-03-factory-trade-design.md` §10.1–§10.4 |
 
-测试规模：`npx vitest run`（**在工作树内跑**，见 §5.9）→ **284 通过 / 18 文件**（2026-10-05 实测，`feature/save-integrity`）。此前记录的 114 通过 / 12 文件 是 §2 那次核查时的规模；`npm test` 若在主检出里显示 24 文件/228 例，那是 `.worktrees/` 副本被重复扫描的假数。
+测试规模：`npx vitest run`（**在工作树内跑**，见 §5.9）→ **293 通过 / 18 文件**（2026-10-07 实测，`feature/save-integrity`）。此前记录的 284 是 S-T8 复审修复轮之前的规模；更早的 114 通过 / 12 文件是 §2 那次核查时的规模；`npm test` 若在主检出里显示 24 文件/228 例，那是 `.worktrees/` 副本被重复扫描的假数。
 
 ---
 
@@ -101,13 +101,24 @@
 8. 覆盖缺口：`未找到该厂房` 三个守卫、`none → owned` 新购路径、出售暂停态、4Q 到账的**时点**（现只验金额）。
 9. `.worktrees/**` 会被主仓 Vitest 扫入，导致 `npm test` 报 24 文件/228 例的假数。删掉残留工作树即可恢复；若今后再用 worktree，需在 `vitest.config.ts` 的 `test.exclude` 里加 `.worktrees/**`（2026-10-04 决定：暂不改配置）。**写进文档的任何测试数字都必须来自工作树内的一次运行**，README「开发说明」已把这条写成要求。
 10. **用户可见的错值**：页面「季初现金盘点」对 `(第1年, 第1季)` 硬编码返回 `cash: '40M'`（`src/components/OperationCenter.tsx:179`，`getQuarterStartInventory` 的开头分支），而真实初始现金是 **20M**（`src/store/enterpriseStore.ts:16`，README「系统初始状态」同此）。40M 疑似从"土地建筑40M"串了来源。导出 CSV 走的是另一条取数（`src/utils/controlTable.ts:100-108` 的 `quarterStartSnapshot`，读快照里的真实现金），所以**同一格页面与 CSV 会给两个数**——这正是第 2 条"两套单元格取数"的一个已发作实例，修第 2 条时把它一起收掉。**分支终审已列为待修**，本轮（Task 9 文档校正）只挂这条可见 TODO、不改成代码。
-11. "只取 `kind === 'flow'`"这条谓词现在**散在 6 处**（`src/utils/controlTable.ts:117`、`:126`；`src/components/OperationCenter.tsx:401`、`:427`；`src/app/page.tsx:335`；`src/store/enterpriseStore.ts:2156` 的期初种子查找还额外把 `description === '初始现金'` 又抄了一遍）。而审计侧与迁移侧共用的是 `restatement.ts` 的 `kindOfLog()`（对**没经过 `loadGame`** 的原始 v3 帧有按位置兜底的分支）。当前这些站点读的都是已迁移的内存态，所以**今天没有行为差异**，风险在漂移：新增一处各写一遍，就会出现"页面合计与审计合计不同源"。待办：合并成一个导出的谓词（如 `isFlowLog`，内部走 `kindOfLog`），种子查找改用 `isSeedLog`。**只写进本节、不写进 README**——README 是给学生/教师的使用文档，内部重复谓词既不可操作也不是使用事实；它的可见后果（同一格两个数）已由第 10 条表达。
+11. "只取 `kind === 'flow'`"这条谓词现在**散在 7 处**（`src/utils/controlTable.ts:117`、`:126`；`src/components/OperationCenter.tsx:401`、`:427`、`:702`（summary 侧的排除式写法）；`src/app/page.tsx:335`；`src/store/enterpriseStore.ts:2153` 与 `:2156`——后者还额外把 `description === '初始现金'` 又抄了一遍。分支终审原先记成 6 处，漏了 `:2153` 这条 summary 侧孪生，计数已按 `grep kind === 'flow'|kind === 'summary'|kind !== 'summary'` 的实测更正）。而审计侧与迁移侧共用的是 `restatement.ts` 的 `kindOfLog()`（对**没经过 `loadGame`** 的原始 v3 帧有按位置兜底的分支）。当前这些站点读的都是已迁移的内存态，所以**今天没有行为差异**，风险在漂移：新增一处各写一遍，就会出现"页面合计与审计合计不同源"。待办：合并成一个导出的谓词（如 `isFlowLog`，内部走 `kindOfLog`），种子查找改用 `isSeedLog`。**只写进本节、不写进 README**——README 是给学生/教师的使用文档，内部重复谓词既不可操作也不是使用事实；它的可见后果（同一格两个数）已由第 10 条表达。
+12. **B 侧判定只认版本标签、不核串（分支终审 F1，第一条该修的）**：`auditFrame` 的 `!legacyRestated ? 'v4' : …` 分支（`src/utils/audit.ts:65-67`）里 `restatedChainIsNewCaliber()` **只在 version<4 那一支被调用**（全仓唯一调用点就是 `:67`），所以"带 v4 标签但串从没被换算过"的一帧仍按 B 定罪。这种帧确实能产生：`restatement.ts:50` 会跳过缺有限 `newCash` 的 summary 行，而 `saveGame`/`autoSaveGame`（`enterpriseStore.ts:407`/`:437`）无条件把版本抬到 `SAVE_FORMAT_VERSION`——于是 `enterpriseStore.ts:272` 注释里"残缺的串由审计的 version<4 分支兜住"这句话落空。后果是一户健康的老档可能印出「账实不符（季度重述串与现金不符）」，而且因为 caliber 是 `'v4'`，`auditSummary.legacyMismatch`（`audit.ts:143`）**不会**把它算进"旧档判定"。可达性窄（需要 v1/v2 时代存档，或本分支修 kind 那段窗口里写下的开发机残留），措辞也留了余地（「依版本标签推定，未逐串核实」），故不作合并阻塞。修法：`'v4'` 只在整串可核实时给出，否则新增一档把 B 逐出 `status/cause`；需同步更正规格 §4.4，并明确接受这条取舍——**部分真指控会变成"未核实"**，而这正是本功能写在前面的优先级。
+13. **口径门只有下界**：`audit.ts:64` 判的是 `version < RESTATED_FULL_NET_FROM_VERSION`。若将来口径再变（v5），v4 标签的帧仍会被 B 判定。落地第 12 条时把它写成**版本区间**，与第 7 条"两道门不合并"并列。
+14. **`getQuarterEndCash` 无守卫插值**：`src/components/OperationCenter.tsx:276` 与 `:287` 直接 `${quarterEndLog.newCash}M` / `${lastQuarterLog.newCash}M`，缺 `newCash` 的老帧会印 `undefinedM`。属既有问题，但**导入功能第一次让外来老包能走到这一格**（`applyImportedState` 只迁移 `kind`，从不回填 `newCash`，`enterpriseStore.ts:262-275`）。与第 10 条同族。
+15. **`nextQuarter` 的链头锚定与审计不同序（行为分叉，比第 11 条重）**：`enterpriseStore.ts:2152-2154` 用严格 `>` 的 reduce 取最大 timestamp（同毫秒时留**数组里先出现**的那条），而 `restatement.ts:45` 与 `audit.ts:126-127` 定的是 `timestamp || id.localeCompare` 全序。两条 summary 同毫秒（脚本式/自动化推进）就会让 store 锚在与审计不同的行上 → 把错口径的 `cashChange` **永久写进存档** → B≠A → 假 `restated-log`。待办：链头取数改走同一个 `latestSummaryOf`（基于 `byTimeThenId`），种子查找改用 `isSeedLog`。**注意别顺手统一的一处**：store 的回退 `seedCash || initialCash` 与审计的 `null`/`no-anchor` 回退**刻意不同**——store 必须写出一个数，审计必须不许编数。
+16. **规格 §4.4/§4.5 曾落后于代码（本轮已改）**：§4.4 的公式原写 `kind === 'flow'`，实现是 `kindOfLog`（正是 round-3 finding N1 的修法）；§4.5 的字段清单未列两条余地、`指纹口径` 行、`重置次数`、`packageDigestScope: 'declared-not-reverified'`、`frameDigests`/`reportFileName`，以及 `unavailable:*` 翻成人话。代码是**更诚实的超集**，所以改的是文档。**留给后续的判断**：今后每加一行印面都要回写 §4.5，否则文档又会变成"少说"的版本。
+17. **S-T7 冒烟欠的视觉验收**：连接器逐字报 `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE: viewport=0x0, visible=false, attached=false`，所以截图/像素观感、真实文件选择器、OS 级落盘、多帧（~0.6MB）与 `unavailable:*`/真篡改包的浏览器路径仍是 NOT VERIFIED（`evaluate_script` 只证明了 DOM 与 `getComputedStyle` 层面）。**测试全绿不等于这三条已验。**
+18. **半自动线分期口径疑点（S-T1 登记，至今未查证）**：8M 的线付 12M——首付 4M（`enterpriseStore.ts:888-889`）+ 两期分期各 4M（`:2262`），描述却写"共2期"。与本分支无关，测试注释已如实描述现状，需要独立立项判定"是规则如此还是多收 4M"。
+19. **`rdLog`/`q-1`/`q-7` 三处 `newCash` 与统一回填链口径不同**（各自忽略 materialPayment/totalInstallPayments/autoProcessFees/短贷/应付）。今天没有消费方读它当现金链；一旦有人读就错——这是规格 §4.4「`newCash` 不作判据」的反面保险。
+20. **`a.click()` 抛错时漏 `removeChild`/`revokeObjectURL`**，以及重复 id 让存档列表两行共用一个 React key：S-T5 裁定"单点改反而制造不一致"（仓库既有两处导出同款），宜与 `SaveLoadPanel.tsx` 的 `downloadFile` 一起收。
+21. **展示表的行内字段类型未逐字段校验**（S-T6 遗留）：`rawMaterialOrders`/`advertisements`/`availableOrders`/`selectedOrders` 的条目只要求"是对象"，缺字段会印成 `undefined`（可见的错值，不崩）。是否收紧待定。
+22. **`.superpowers/` 曾被 `.gitignore` 漏掉**（本轮已加）：SDD 台账与冒烟产物一度处于"未跟踪但一条 `git add -A` 就入库"的状态。另注意 `.worktrees/factory-trade` 已是**孤儿目录**而非登记中的工作树（`git worktree list` 只两条），`git worktree prune` 不会删它，需手工清理（台账记录它曾被 node PID 58536 占用）。
 
 ---
 
 ## 6. 怎么知道做对了
 
-- P0：**（已验，2026-10-05）**在一台干净电脑上导入另一台导出的 JSON，运营进度与 4 年利润表完全一致；导入被截断的文件给出明确错误而不是崩溃——两类都跑过（S-T5/S-T6/S-T7 的冒烟：正常包、把帧末现金改成 168 的篡改包、缺 `current` 的畸形包、改动 `current` 却不重算包指纹的包；产物在工作树 `.superpowers/tmp/` 下，未入库、可能随时清理），并有 `npx vitest run` 的 284 例作回归；判据"不静默覆盖任何存档"由 `tests/saveImport.test.ts`「导入落库语义（默认不覆盖）」那组用例守住。
+- P0：**（已验，2026-10-05）**在一台干净电脑上导入另一台导出的 JSON，运营进度与 4 年利润表完全一致；导入被截断的文件给出明确错误而不是崩溃——两类都跑过（S-T5/S-T6/S-T7 的冒烟：正常包、把帧末现金改成 168 的篡改包、缺 `current` 的畸形包、改动 `current` 却不重算包指纹的包；产物在工作树 `.superpowers/tmp/` 下，未入库、可能随时清理），并有 `npx vitest run` 的 293 例作回归（2026-10-07 于工作树内复跑）；判据"不静默覆盖任何存档"由 `tests/saveImport.test.ts`「导入落库语义（默认不覆盖）」那组用例守住。
 - P1：任选一次现金断流，复盘页能指出是哪笔操作、哪个季度造成的，且金额与已导出的控制表逐格对得上。
 - P2：资产负债表恒等式在任意年份任意操作后都成立（资产 = 负债 + 权益），亏损年所得税为 0。
 - P3：同一状态下推演分叉不改变原状态；`npx vitest run` 在改动前后都绿。

@@ -53,3 +53,5 @@ Thumbs.db
 
 # 隔离工作区（git worktree 检出，不应入库）
 .worktrees/
+# SDD 会话工作台与冒烟产物（台账、任务简报/报告、临时存档包），同样不应入库
+.superpowers/
