@@ -1,8 +1,13 @@
 'use client';
 import React from 'react';
+// 能力边界那句与两条余地**只有一份**（src/utils/audit.ts，规格 §4.6）：核对报告的首行、README 与本弹窗
+// 都 import 它，任何一处自己打一遍，三处就会各自漂走（tests/integrityCopy.test.ts 断引用相等，重写同字面量过不了）。
+import { CAUSE_TEXT, INTEGRITY_BOUNDARY, INTEGRITY_CAVEATS } from '../utils/audit';
 
 // 规则说明弹窗：内置运营规则（重点标注修改后的广告投放规则）
-const RULE_SECTIONS: { title: string; highlight?: boolean; items: string[] }[] = [
+// RULE_SECTIONS 导出给 tests/integrityCopy.test.ts：本仓库测试环境是 node、无 jsdom（规格 §7），
+// 渲染测不了，就断言**渲染要用的数据**——节是否存在、位置对不对、里面是不是那两个常量对象本身。
+export const RULE_SECTIONS: { title: string; highlight?: boolean; items: string[] }[] = [
   {
     title: '广告投放规则（本系统修改项）',
     highlight: true,
@@ -67,6 +72,23 @@ const RULE_SECTIONS: { title: string; highlight?: boolean; items: string[] }[] =
       '短期贷款：第1季度初（1月）和第3季度初（6月）放贷，每次20M，未还本余额最多40M，年息5%，期限1年，到期一次还本付息。',
       '资金贴现：有应收款时可随时进行，金额为7的倍数，每7M支付1M贴息（到账6M）。',
       '禁止民间借贷等违法行为。',
+    ],
+  },
+  {
+    title: '存档与完整性校验',
+    highlight: true,
+    items: [
+      '存档包：一个 JSON 文件（不带 BOM），含当前进度、全部历史快照与两者指纹；可在另一台电脑或另一浏览器导入继续运营。',
+      '导入默认不覆盖：与本机同 id 的历史帧不替换原有存档，而是追加新 id（形如 -imported-1）、列表名加注（导入1）；落库前先看预览，再由「仅加入存档列表」与「设为当前进度」二选一。',
+      '账实重演算：每帧用自带的现金流水（kind=flow）独立重推余额并与帧末现金比对，只依据该帧、不跨帧拼接；不符时报出是第几年第几季，并给出「流水重演算」与「帧末现金」两个读数。',
+      '缺期初现金种子的帧报「起算链不完整」，与「账实不符」是两种结论；后者分三类：'
+        + `${CAUSE_TEXT['flow-log']} / ${CAUSE_TEXT['restated-log']} / ${CAUSE_TEXT['both']}。`,
+      '包指纹：导出时对规范化 JSON 计算 SHA-256（另有逐帧指纹）。换设备或非 HTTPS 环境算不出摘要时，逐帧标注「哈希未计算（非 HTTPS 环境）」，绝不静默当成不一致。指纹只是篡改线索、不是锁：改完数据自己重算摘要的人防不住。',
+      '核对报告：预览当场算出的逐帧结论与指纹判定可导出为 txt / json 两种，首行就是下面这句能力边界声明；报告只转录本机在预览那一刻算过的结果，不再重算一遍。',
+      '导出与核对（读文件、算预览）在运营暂停时仍可用；只有会改动本机存档的两个落库动作要先继续运营。',
+      INTEGRITY_BOUNDARY,
+      '以下两条余地是实测得出的，与核对报告首行之后那两条逐字相同（同一份常量，不重写）；其中提到的「帧统计」见核对报告的帧统计行。',
+      ...INTEGRITY_CAVEATS,
     ],
   },
   {
